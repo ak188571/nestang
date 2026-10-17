@@ -169,4 +169,6 @@ set_option -use_sspi_as_gpio 1
 set_option -multi_boot 1
 set_option -place_option 2
 
+add_file -type verilog "src/iosys/tc_osd_layer.sv"
+
 run all

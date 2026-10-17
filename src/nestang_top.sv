@@ -76,6 +76,11 @@ module nestang_top (
     output [2:0] tmds_d_n,
     output [2:0] tmds_d_p
 );
+wire osd_input_block;
+`ifdef VERILATOR
+assign osd_input_block=1'b0;
+`endif
+
 
 // Core settings
 wire arm_reset = 0;
@@ -150,8 +155,8 @@ wor [11:0] joy1_btns, joy2_btns;    // SNES layout (R L X A RT LT DN UP START SE
                                     // Lower 8 bits are NES buttons
 wire [11:0] joy_usb1, joy_usb2;
 wire [11:0] hid1, hid2;             // From BL616
-wire [11:0] joy1 = joy1_btns | hid1 | joy_usb1;
-wire [11:0] joy2 = joy2_btns | hid2 | joy_usb2;
+wire [11:0] joy1 = osd_input_block ? 12'b0 : joy1_btns | hid1 | joy_usb1;
+wire [11:0] joy2 = osd_input_block ? 12'b0 : joy2_btns | hid2 | joy_usb2;
 
 // NES gamepad
 wire [7:0]NES_gamepad_button_state;
@@ -196,7 +201,7 @@ always @(posedge clk) begin
     reset_cnt <= reset_cnt == 0 ? 0 : reset_cnt - 1;
     if (reset_cnt == 0)
 //    if (reset_cnt == 0 && s1)     // for nano
-        sys_resetn <= ~(joy1_btns[5] && joy1_btns[2]);    // 8BitDo Home button = Select + Down
+        sys_resetn <= ~(!osd_input_block && joy1_btns[5] && joy1_btns[2]);    // 8BitDo Home button = Select + Down
 end
 
 `ifndef VERILATOR
@@ -355,7 +360,15 @@ GameData game_data(
 `else
 
 // For physical board, there's HDMI, iosys, joypads, and USB
-wire overlay;                   // iosys controls overlay
+wire overlay;
+wire [31:0] osd_window;
+wire osd_window_toggle,osd_visible;
+`ifndef MCU_BL616
+assign osd_window=32'h0000201c;
+assign osd_window_toggle=1'b0;
+assign osd_input_block=overlay;
+`endif
+                   // iosys controls overlay
 wire [7:0] overlay_x;
 wire [7:0]  overlay_y;
 wire [14:0] overlay_color;      // BGR5
@@ -365,6 +378,7 @@ nes2hdmi u_hdmi (     // purple: RGB=440064 (010001000_00000000_01100100), BGR5=
     .clk(clk), .resetn(sys_resetn),
     .color(color), .cycle(cycle), 
     .scanline(scanline), .sample(sample >> 1),
+    .osd_window(osd_window), .osd_window_toggle(osd_window_toggle), .osd_visible(osd_visible),
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y),
     .overlay_color(overlay_color),
     .clk_pixel(hclk), .clk_5x_pixel(hclk5),
@@ -378,6 +392,8 @@ iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1)
     sys_inst (
     .clk(clk), .hclk(hclk), .resetn(sys_resetn),
 
+    .osd_window(osd_window), .osd_window_toggle(osd_window_toggle), .osd_visible(osd_visible),
+    .osd_input_block(osd_input_block),
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y), .overlay_color(overlay_color),
     .joy1(joy1_btns | joy_usb1), .joy2(joy2_btns | joy_usb2),
     .hid1(hid1), .hid2(hid2),
@@ -455,8 +471,8 @@ always @(posedge clk) begin
         joypad_bits2 <= {1'b1, joypad_bits2[7:1]};
     last_joypad_clock <= joypad_clock;
 end
-assign joypad1_data[0] = joypad_bits[0];
-assign joypad2_data[0] = joypad_bits2[0];
+assign joypad1_data[0] = osd_input_block ? 1'b0 : joypad_bits[0];
+assign joypad2_data[0] = osd_input_block ? 1'b0 : joypad_bits2[0];
 
 `endif
 

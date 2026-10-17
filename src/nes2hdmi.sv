@@ -16,6 +16,10 @@ module nes2hdmi (
 
     // overlay interface
     input overlay,
+    input [31:0] osd_window,
+    input osd_window_toggle,
+    output osd_visible,
+
     output [7:0] overlay_x,
     output [7:0] overlay_y,
     input [14:0] overlay_color, // BGR5
@@ -150,8 +154,10 @@ reg [10:0] xcnt             /* xsynthesis syn_keep=1 */;
 reg [10:0] ycnt             /* xsynthesis syn_keep=1 */;                  // fractional scaling counters
 reg [9:0] cy_r;
 assign mem_portB_addr = yy * WIDTH + xx + 8*256;
-assign overlay_x = xx;
-assign overlay_y = yy;
+wire osd_pixel;
+tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
+    .active(overlay),.window(osd_window),.window_toggle(osd_window_toggle),
+    .x(overlay_x),.y(overlay_y),.pixel(osd_pixel),.visible(osd_visible));
 localparam XSTART = (1280 - 960) / 2;   // 960:720 = 4:3
 localparam XSTOP = (1280 + 960) / 2;
 
@@ -207,7 +213,7 @@ end
 reg [23:0] NES_PALETTE [0:63];
 always @(posedge clk_pixel) begin
     if (active) begin
-        if (overlay)
+        if (osd_pixel)
             rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
         else
             rgb <= NES_PALETTE[mem_portB_rdata];
