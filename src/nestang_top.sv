@@ -9,6 +9,7 @@ import configPackage::*;
 
 module nestang_top (
     input sys_clk,
+    input s0, // Tang Console USER_BUTTON0, active low; resets USB hosts only
 
     // Button S1 and pin 48 are both resets
     input s1,
@@ -430,11 +431,17 @@ wire clk12;
 wire pll_lock_12;
 wire usb_conerr;
 wire [1:0] usb_type;
+wire p1_report;
+wire p1_connected;
+wire p1_auto_start_seen;
+wire p1_auto_wdt_seen;
 pll_12 pll12(.clkin(sys_clk), .clkout0(clk12), .lock(pll_lock_12));
 usb_hid_host usb_hid_host (
-    .usbclk(clk12), .usbrst_n(pll_lock_12),
+    .usbclk(clk12), .usbrst_n(pll_lock_12 && s0),
     .usb_dm(usb1_dn), .usb_dp(usb1_dp),
-    .game_snes(joy_usb1), .typ(usb_type), .conerr(usb_conerr)
+    .game_snes(joy_usb1), .typ(usb_type), .conerr(usb_conerr),
+    .report(p1_report), .dbg_connected(p1_connected),
+    .dbg_auto_start_seen(p1_auto_start_seen), .dbg_auto_wdt_seen(p1_auto_wdt_seen)
 );
 `else
 assign joy_usb1 = 12'b0;
@@ -443,12 +450,52 @@ assign joy_usb1 = 12'b0;
 `ifdef USB2
 wire usb_conerr2;
 wire [1:0] usb_type2;
+wire p2_connected;
 usb_hid_host usb_hid_host2 (
-    .usbclk(clk12), .usbrst_n(pll_lock_12),
+    .usbclk(clk12), .usbrst_n(pll_lock_12 && s0),
     .usb_dm(usb2_dn), .usb_dp(usb2_dp),
-    .game_snes(joy_usb2), .typ(usb_type2), .conerr(usb_conerr2)
+    .game_snes(joy_usb2), .typ(usb_type2), .conerr(usb_conerr2),
+    .dbg_connected(p2_connected)
 );
-assign led = ~{joy_usb2[1:0], usb_type2, usb_conerr2, usb_type, usb_conerr};
+reg [11:0] p1_buttons_prev = 0, p2_buttons_prev = 0;
+reg [22:0] p1_button_hold = 0, p1_report_hold = 0, p2_button_hold = 0;
+localparam integer LED_HOLD_CYCLES = 6000000; // 0.5 s at 12 MHz
+always @(posedge clk12) begin
+    if (!pll_lock_12 || !s0) begin
+        p1_buttons_prev <= 0;
+        p2_buttons_prev <= 0;
+        p1_button_hold <= 0;
+        p1_report_hold <= 0;
+        p2_button_hold <= 0;
+    end else begin
+        p1_buttons_prev <= joy_usb1;
+        p2_buttons_prev <= joy_usb2;
+        if (|(joy_usb1 & ~p1_buttons_prev)) p1_button_hold <= LED_HOLD_CYCLES;
+        else if (p1_button_hold != 0) p1_button_hold <= p1_button_hold - 1'b1;
+        if (p1_report) p1_report_hold <= LED_HOLD_CYCLES;
+        else if (p1_report_hold != 0) p1_report_hold <= p1_report_hold - 1'b1;
+        if (|(joy_usb2 & ~p2_buttons_prev)) p2_button_hold <= LED_HOLD_CYCLES;
+        else if (p2_button_hold != 0) p2_button_hold <= p2_button_hold - 1'b1;
+    end
+end
+reg [22:0] signature_count = 0;
+reg signature_blink = 0;
+always @(posedge clk12) begin
+    if (!pll_lock_12) begin
+        signature_count <= 0;
+        signature_blink <= 0;
+    end else if (signature_count == 23'd5999999) begin
+        signature_count <= 0;
+        signature_blink <= ~signature_blink;
+    end else
+        signature_count <= signature_count + 1'b1;
+end
+// LED6 stays on and LED7 blinks at 1 Hz to identify this image independently.
+wire [7:0] diagnostic_lit = {signature_blink, 1'b1, usb_conerr,
+                              p1_auto_wdt_seen, p1_auto_start_seen,
+                              (p1_report_hold != 0), p1_connected,
+                              (p1_button_hold != 0)};
+assign led = s0 ? ~diagnostic_lit : 8'h00; // all on while S0 is pressed
 `else
 assign joy_usb2 = 12'b0;
 `endif
