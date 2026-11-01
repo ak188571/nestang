@@ -14,6 +14,9 @@ module nes2hdmi (
     input [15:0] sample,
     input aspect_8x7,       // 1: 8x7 pixel aspect ratio mode
 
+    input [31:0] core_config,
+    output [31:0] crt_config_applied,
+
     // overlay interface
     input overlay,
     input [31:0] osd_window,
@@ -211,12 +214,19 @@ end
 
 // calc rgb value to hdmi
 reg [23:0] NES_PALETTE [0:63];
+wire [31:0] crt_config_active;
+wire [23:0] game_rgb_crt;
+tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
+    .requested(core_config),.frame_start(cx==0 && cy==0),
+    .active_config(crt_config_active),.applied_config(crt_config_applied));
+crt_filter crt(.rgb_in(NES_PALETTE[mem_portB_rdata]),
+    .config_active(crt_config_active),.rgb_out(game_rgb_crt));
 always @(posedge clk_pixel) begin
     if (active) begin
         if (osd_pixel)
             rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
         else
-            rgb <= NES_PALETTE[mem_portB_rdata];
+            rgb <= game_rgb_crt;
     end else
         rgb <= 24'h303030;
 end
