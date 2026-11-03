@@ -9,7 +9,7 @@ module tb_crt_config;
     tc_crt_config dut(.*);
     reg [23:0] rgb_in=0;
     wire [23:0] rgb_out;
-    crt_filter filter(.pclk(pclk),.resetn(resetn),.first_pixel(1'b0),.last_pixel(1'b0),.source_line_end(1'b1),
+    crt_filter filter(.pclk(pclk),.resetn(resetn),.first_pixel(1'b0),.last_pixel(1'b0),.scan_depth(4'd8),
         .rgb_in(rgb_in),.config_active(active_config & ~32'h00010000),.rgb_out(rgb_out));
     reg [31:0] previous=0;
     reg boundary=0;

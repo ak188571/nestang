@@ -2,11 +2,12 @@
 // Blur uses three compensated stages: palette RGB, center history, and FIR
 // result. The caller prefetches three pixels. Bypass retains its original read address and
 // rgb_in passes straight through, including during live framebuffer writes.
+// Scanline alone uses palette_q and requires one pixel of caller prefetch.
 module crt_filter (
     input wire pclk, resetn,
     input wire [23:0] rgb_in,
     input wire first_pixel, last_pixel,
-    input wire source_line_end, // Last output row belonging to the current source row.
+    input wire [3:0] scan_depth, // 0..8 attenuation in sixteenths, from native row phase.
     input wire [31:0] config_active,
     output wire [23:0] rgb_out
 );
@@ -55,32 +56,30 @@ module crt_filter (
                     channel(left[7:0],center[7:0],right[7:0],strength)};
     // Split palette/blur from gain so that they meet the pixel clock.
     // Use the result register for every enabled blur, including scanline OFF.
-    // This eliminates the long unregistered FIR path to final RGB. Scanline
-    // alone and master bypass retain the original live-memory read timing.
+    // This eliminates the long unregistered FIR path to final RGB.
     reg [23:0] blurred_q=0;
     always @(posedge pclk)begin
         if(!resetn)blurred_q<=0;else blurred_q<=blurred;
     end
     // Keep the unregistered blur path completely outside the gain arithmetic.
     // Selecting it before gain would leave a long (mode-incompatible) STA path.
-    wire [23:0] scan_input=strength!=0?blurred_q:rgb_in;
+    wire [23:0] scan_input=strength!=0?blurred_q:palette_q;
     function automatic [7:0] dim_channel;
         input [7:0] c;
-        input [1:0] level;
-        reg [10:0] total;
+        input [3:0] depth;
+        reg [4:0] gain;
+        reg [12:0] total;
         begin
-            total=0;
-            case(level)
-                1:begin total=({3'b0,c}<<3)-{3'b0,c}+11'd4;dim_channel=total[10:3];end
-                2:begin total=({3'b0,c}<<1)+{3'b0,c}+11'd2;dim_channel=total[9:2];end
-                3:begin total={3'b0,c}+11'd1;dim_channel=total[8:1];end
-                default:dim_channel=c;
-            endcase
+            gain=5'd16-{1'b0,depth};
+            total=c*gain+13'd8;
+            dim_channel=total[11:4];
         end
     endfunction
-    wire [1:0] scan_level=config_active[16] && source_line_end?config_active[20:19]:2'b00;
-    wire [23:0] scanned={dim_channel(scan_input[23:16],scan_level),
-                    dim_channel(scan_input[15:8],scan_level),
-                    dim_channel(scan_input[7:0],scan_level)};
-    assign rgb_out=scanned;
+    wire scan_enabled=config_active[16] && |config_active[20:19];
+    wire [23:0] scanned={dim_channel(scan_input[23:16],scan_depth),
+                    dim_channel(scan_input[15:8],scan_depth),
+                    dim_channel(scan_input[7:0],scan_depth)};
+    // Raw palette RGB never passes through the gain arithmetic. Master OFF
+    // retains the exact legacy read timing; registered effect paths are compensated.
+    assign rgb_out=scan_enabled?scanned:strength!=0?blurred_q:rgb_in;
 endmodule

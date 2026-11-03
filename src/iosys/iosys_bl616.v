@@ -158,6 +158,8 @@ reg [7:0] cursor_y;
 reg [7:0] response_type;
 reg response_req;
 reg response_ack;
+reg queued_response_valid;
+reg [7:0] queued_response_type;
 
 // mgmt_* multiplex
 reg mgmt_rx;
@@ -208,6 +210,7 @@ always @(posedge clk) begin
         osd_window<=32'h0000201c;osd_window_toggle<=0;osd_key<=16'h0084;
         recv_state <= RECV_IDLE;
         response_req<=0;response_type<=0;
+        queued_response_valid<=0;queued_response_type<=0;
         cmd_reg <= 0;
         data_reg <= 0;
         rom_loading_reg <= 0;
@@ -227,6 +230,13 @@ always @(posedge clk) begin
         fdd_read_finish <= 0;
         mgmt_rx <= 0;
         kbd_data_valid <= 0;
+
+        // TX owns one response slot. Keep a latest pending query separately
+        // while continuing to receive all configuration/OSD/ROM packets.
+        if(queued_response_valid && response_req==response_ack && recv_state!=RECV_RESPONSE_REQ)begin
+            response_type<=queued_response_type;response_req<=~response_req;
+            queued_response_valid<=0;
+        end
 
         case (recv_state)
 
@@ -349,18 +359,18 @@ always @(posedge clk) begin
             RECV_RESPONSE_REQ:                      // request to send config string
                 case (cmd_reg)
                     1,2,8'h12: begin                      // 1: core ID, 2: config string
-                        response_type <= cmd_reg;
-                        response_req ^= 1;
-                        recv_state <= RECV_RESPONSE_ACK;
+                        if(response_req==response_ack && !queued_response_valid)begin
+                            response_type<=cmd_reg;response_req<=~response_req;
+                        end else begin
+                            queued_response_type<=cmd_reg;queued_response_valid<=1;
+                        end
+                        recv_state <= RECV_IDLE;
                     end
                     default:
                         recv_state <= RECV_IDLE;
                 endcase
 
-            RECV_RESPONSE_ACK:                      // wait for TX to finish
-                if (response_req == response_ack) begin
-                    recv_state <= RECV_IDLE;
-                end
+            RECV_RESPONSE_ACK: recv_state<=RECV_IDLE; // Reserved legacy state; never wait for TX.
         endcase
         
     end

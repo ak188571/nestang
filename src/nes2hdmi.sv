@@ -157,7 +157,7 @@ reg [10:0] xcnt             /* xsynthesis syn_keep=1 */;
 reg [10:0] ycnt             /* xsynthesis syn_keep=1 */;                  // fractional scaling counters
 reg [9:0] cy_r;
 // Keep the exact legacy read schedule in bypass, including read/write overlap.
-// Prefetch three pixels for the registered blur, zero for scanline alone or bypass.
+// Prefetch three pixels for blur, one for scanline alone, zero for bypass.
 wire blur_enabled=crt_config_active[16] && |crt_config_active[18:17];
 wire scan_enabled=crt_config_active[16] && |crt_config_active[20:19];
 // In the game interval 3*256 < 960, so at most one source column advances.
@@ -165,10 +165,43 @@ wire scan_enabled=crt_config_active[16] && |crt_config_active[20:19];
 // Blank margins provide priming time at row boundaries before x=160.
 wire [7:0] xx_three=xx+(xcnt>=11'd192 ? 8'd1 : 8'd0);
 assign mem_portB_addr = blur_enabled ? yy * WIDTH + xx_three + 8*256 :
+                       scan_enabled ? yy_next * WIDTH + xx_next + 8*256 :
                                       yy * WIDTH + xx + 8*256;
-// ycnt is the source-row fractional position (224 steps per output row).
-// Carry into the next row marks exactly one dark output row per source row.
-wire source_line_end=ycnt>=11'd496; // 720 - 224; follows source rows, not HDMI parity.
+// Integrate a one-output-pixel-wide dark band at each native source-row end.
+// ycnt advances by 224 modulo 720, so every reachable phase is a multiple of 16.
+// Band overlap with the output-row footprint is triangular, 0..224 (0..14 here).
+// Quantized attenuation preserves its integrated strength over the 45-row cycle.
+function automatic [3:0] native_scan_depth(input [10:0] phase,input [1:0] level);
+    reg [5:0] index;
+    reg [4:0] weight;
+    begin
+        index=phase[9:4];
+        if(index<=17)weight=0;
+        else if(index<31)weight=5'(index-17);
+        else weight=5'(45-index);
+        case(level)
+            1:native_scan_depth=weight<4?0:weight<11?1:2;
+            2:native_scan_depth=weight<2?0:weight<6?1:weight<9?2:weight<13?3:4;
+            3:case(weight)
+                0:native_scan_depth=0;
+                1,2:native_scan_depth=1;
+                3,4:native_scan_depth=2;
+                5,6:native_scan_depth=3;
+                7:native_scan_depth=4;
+                8,9:native_scan_depth=5;
+                10,11:native_scan_depth=6;
+                12,13:native_scan_depth=7;
+                default:native_scan_depth=8;
+            endcase
+            default:native_scan_depth=0;
+        endcase
+    end
+endfunction
+reg [3:0] scan_depth=0;
+always @(posedge clk_pixel)begin
+    if(!resetn)scan_depth<=0;
+    else scan_depth<=native_scan_depth(ycnt,crt_config_active[20:19]);
+end
 wire osd_pixel;
 tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
     .active(overlay),.window(osd_window),.window_toggle(osd_window_toggle),
@@ -211,7 +244,7 @@ tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
 crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
     .first_pixel(cx==(blur_enabled?XSTART-1:XSTART)),
-    .last_pixel(cx==(blur_enabled?XSTOP-2:XSTOP-1)),.source_line_end(source_line_end),
+    .last_pixel(cx==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
     .rgb_in(NES_PALETTE[mem_portB_rdata]),
     .config_active(crt_config_active),.rgb_out(game_rgb_crt));
 always @(posedge clk_pixel) begin

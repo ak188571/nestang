@@ -21,6 +21,7 @@ module tb_crt_uart;
     async_receiver #(.ClkFrequency(32000000),.Baud(2000000)) monitor(
         .clk(clk),.RxD(uart_tx),.RxD_data(byte_out),.RxD_data_ready(byte_ready));
     byte unsigned received[$];
+    integer burst_start;
     always @(posedge clk)if(byte_ready)received.push_back(byte_out);
     task automatic send_byte(input byte unsigned b);
         @(negedge clk);uart_rx=0;repeat(16)@(negedge clk);
@@ -38,7 +39,7 @@ module tb_crt_uart;
         for(integer k=from_byte;k+7<received.size();k=k+1)
             if(received[k]==8'haa&&received[k+1]==0&&received[k+2]==5&&received[k+3]==8'h12)begin
                 if({received[k+4],received[k+5],received[k+6],received[k+7]}!==expected)
-                    $fatal(1,"bad applied snapshot");
+                    $fatal(1,"bad applied snapshot expected=%h got=%h",expected,{received[k+4],received[k+5],received[k+6],received[k+7]});
                 found=1;
             end
         if(!found)$fatal(1,"status reply missing");
@@ -61,7 +62,32 @@ module tb_crt_uart;
         header(6,3);send_byte(8'hde);send_byte(8'had);send_byte(8'hbe);send_byte(8'hef);send_byte(0);
         repeat(100)@(negedge clk);
         if(core_config!==32'h001b1234)$fatal(1,"wrong-length packet changed config");
-        header(1,2);repeat(20000)@(negedge clk);
+        // BL616 polls status and immediately sends settings/drawing commands.
+        // TX must never suspend RX or the next command header is silently lost.
+        header(1,8'h12);
+        header(5,3);send_byte(0);send_byte(1);send_byte(0);send_byte(0);
+        repeat(2500)@(negedge clk);
+        if(core_config!==32'h00010000)$fatal(1,"status reply blocked following config packet");
+        // Keep the long capability reply active; queue more status requests,
+        // write OSD text, and change config concurrently. TX type stays stable.
+        burst_start=received.size();header(1,2);
+        header(1,8'h12);header(1,8'h12);
+        header(3,4);send_byte(7);send_byte(9);
+        header(4,5);send_byte("A");send_byte("B");send_byte("C");
+        header(5,3);send_byte(0);send_byte(8'h19);send_byte(0);send_byte(0);
+        repeat(20000)@(negedge clk);
+        if(core_config!==32'h00190000||dut.cursor_x!==10||dut.cursor_y!==9||dut.char_wr!=="C")
+            $fatal(1,"long response blocked config or drawing packet");
+        begin
+            bit queued_status=0;
+            for(integer k=burst_start;k+7<received.size();k++)
+                if(received[k]==8'haa&&received[k+1]==0&&received[k+2]==5&&received[k+3]==8'h12)begin
+                    if({received[k+4],received[k+5],received[k+6],received[k+7]}!==32'h001b1234)
+                        $fatal(1,"queued status was torn or acknowledged before a frame");
+                    queued_status=1;
+                end
+            if(!queued_status)$fatal(1,"queued status response lost behind long reply");
+        end
         begin
             string reply="";
             bit marker=0,blur_marker=0,scan_marker=0;
@@ -73,6 +99,13 @@ module tb_crt_uart;
             end
             if(!marker||!blur_marker||!scan_marker)$fatal(1,"stage capability not transmitted");
         end
+        // A previous setting can already be in the mailbox. Allow it to apply,
+        // then the latest coalesced value at a subsequent frame boundary.
+        repeat(3)begin
+            @(negedge hclk);frame_start=1;@(negedge hclk);frame_start=0;
+            repeat(16)@(negedge clk);
+        end
+        status(32'h00190000);
         $display("CRT UART PASS: real serial packets, frame-applied readback, packet length guard, capability, immediate chord blocking, P1 ownership");$finish;
     end
     initial begin #1000000;$fatal(1,"UART timeout");end
