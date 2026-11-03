@@ -79,10 +79,10 @@ module tb_crt_video;
             // dual-clock framebuffer read/write collisions. Bypass is tested
             // with continuous writes both before and after the effect tests.
             if(k==2500000)run_video=0;
-            if(k==2750000)core_config=32'h00131234; // weak, with reserved scanline bits
-            if(k==4000000)core_config=32'h00151234; // standard
-            if(k==5250000)core_config=32'h00171234; // strong
-            if(k==6500000)core_config=32'h00191234; // enable ON, blur OFF, scanline ignored
+            if(k==2750000)core_config=32'h00031234; // weak, scanline OFF for blur regression
+            if(k==4000000)core_config=32'h00051234; // standard
+            if(k==5250000)core_config=32'h00071234; // strong
+            if(k==6500000)core_config=32'h00011234; // enable ON, both effects OFF
             if(k==7750000)begin overlay=0;run_video=1;end
             checks=checks+1;
         end

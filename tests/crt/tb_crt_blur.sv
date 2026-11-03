@@ -3,7 +3,7 @@ module tb_crt_blur;
     reg pclk=0,resetn=0;
     always #3 pclk=~pclk;
     reg [23:0] rgb_in=0;
-    reg first_pixel=0,last_pixel=0;
+    reg first_pixel=0,last_pixel=0,source_line_end=0;
     reg [31:0] config_active=0;
     wire [23:0] rgb_out;
     crt_filter dut(.*);
@@ -23,16 +23,19 @@ module tb_crt_blur;
     endfunction
     task automatic line_check(input integer n,input integer strength,input bit enabled);
         reg [23:0] expected;
-        @(negedge pclk);rgb_in=pixels[0];first_pixel=0;last_pixel=0;
-        config_active=32'h00180000|(32'(strength)<<17)|(enabled?32'h10000:0);
-        @(posedge pclk);#1;
-        for(integer x=0;x<n;x++)begin
+        config_active=(32'(strength)<<17)|(enabled?32'h10000:0);
+        for(integer x=-3;x<n;x++)begin
+            integer read_x;
             @(negedge pclk);
-            rgb_in=pixels[!enabled||strength==0?x:x==n-1?x:x+1];first_pixel=x==0;last_pixel=x==n-1;
+            read_x=enabled&&strength!=0?x+3:x;
+            if(read_x<0)read_x=0;if(read_x>=n)read_x=n-1;
+            rgb_in=pixels[read_x];first_pixel=x+1==0;last_pixel=x+1==n-1;
             #1;
-            expected=reference_rgb(pixels[x==0?x:x-1],pixels[x],pixels[x==n-1?x:x+1],enabled?strength:0);
-            if(rgb_out!==expected)$fatal(1,"blur n=%0d x=%0d strength=%0d enable=%0d got=%h expected=%h",n,x,strength,enabled,rgb_out,expected);
-            checks++;
+            if(x>=0)begin
+                expected=reference_rgb(pixels[x==0?x:x-1],pixels[x],pixels[x==n-1?x:x+1],enabled?strength:0);
+                if(rgb_out!==expected)$fatal(1,"blur n=%0d x=%0d strength=%0d enable=%0d got=%h expected=%h",n,x,strength,enabled,rgb_out,expected);
+                checks++;
+            end
             @(posedge pclk);#1;
         end
     endtask
@@ -59,7 +62,7 @@ module tb_crt_blur;
             end
         end
         @(negedge pclk);resetn=0;config_active=0;
-        @(posedge pclk);#1;if(dut.center!==0||dut.previous!==0)$fatal(1,"reset left stale samples");
+        @(posedge pclk);#1;if(dut.palette_q!==0||dut.center!==0||dut.previous!==0||dut.blurred_q!==0)$fatal(1,"reset left stale samples");
         $display("CRT blur PASS: independent integer reference, 3 strengths, enable/strength bypass, per-channel rounding, black/white/impulses/alternation/ramp/noise, widths 1..32, edge clamps, reset; pixels=%0d",checks);
         $finish;
     end

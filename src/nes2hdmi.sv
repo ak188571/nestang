@@ -157,10 +157,18 @@ reg [10:0] xcnt             /* xsynthesis syn_keep=1 */;
 reg [10:0] ycnt             /* xsynthesis syn_keep=1 */;                  // fractional scaling counters
 reg [9:0] cy_r;
 // Keep the exact legacy read schedule in bypass, including read/write overlap.
-// Only an enabled blur prefetches one pixel to compensate its center register.
+// Prefetch three pixels for the registered blur, zero for scanline alone or bypass.
 wire blur_enabled=crt_config_active[16] && |crt_config_active[18:17];
-assign mem_portB_addr = blur_enabled ? yy_next * WIDTH + xx_next + 8*256 :
+wire scan_enabled=crt_config_active[16] && |crt_config_active[20:19];
+// In the game interval 3*256 < 960, so at most one source column advances.
+// The carry condition xcnt+768 >= 960 reduces to xcnt >= 192.
+// Blank margins provide priming time at row boundaries before x=160.
+wire [7:0] xx_three=xx+(xcnt>=11'd192 ? 8'd1 : 8'd0);
+assign mem_portB_addr = blur_enabled ? yy * WIDTH + xx_three + 8*256 :
                                       yy * WIDTH + xx + 8*256;
+// ycnt is the source-row fractional position (224 steps per output row).
+// Carry into the next row marks exactly one dark output row per source row.
+wire source_line_end=ycnt>=11'd496; // 720 - 224; follows source rows, not HDMI parity.
 wire osd_pixel;
 tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
     .active(overlay),.window(osd_window),.window_toggle(osd_window_toggle),
@@ -202,7 +210,8 @@ tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
 crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
-    .first_pixel(cx==XSTART),.last_pixel(cx==XSTOP-1),
+    .first_pixel(cx==(blur_enabled?XSTART-1:XSTART)),
+    .last_pixel(cx==(blur_enabled?XSTOP-2:XSTOP-1)),.source_line_end(source_line_end),
     .rgb_in(NES_PALETTE[mem_portB_rdata]),
     .config_active(crt_config_active),.rgb_out(game_rgb_crt));
 always @(posedge clk_pixel) begin
