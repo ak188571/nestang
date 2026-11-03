@@ -9,7 +9,8 @@ module tb_crt_config;
     tc_crt_config dut(.*);
     reg [23:0] rgb_in=0;
     wire [23:0] rgb_out;
-    crt_filter filter(.rgb_in(rgb_in),.config_active(active_config),.rgb_out(rgb_out));
+    crt_filter filter(.pclk(pclk),.resetn(resetn),.first_pixel(1'b0),.last_pixel(1'b0),
+        .rgb_in(rgb_in),.config_active(active_config & ~32'h00010000),.rgb_out(rgb_out));
     reg [31:0] previous=0;
     reg boundary=0;
     integer checked=0;
@@ -44,9 +45,9 @@ module tb_crt_config;
         repeat(3)@(negedge clk);requested=32'h0019aa55;
         wait_applied(32'h0019aa55);
         // Bypass must preserve every possible 8-bit RGB combination sampled here,
-        // irrespective of active parameter bits and frame boundaries.
+        // with CRT enable cleared, including the prefetch compensation register.
         for(integer i=0;i<65536;i=i+1)begin
-            rgb_in={8'(i),8'(i>>8),8'(i^8'hd3)};#1;
+            rgb_in={8'(i),8'(i>>8),8'(i^8'hd3)};@(posedge pclk);#1;
             if(rgb_out!==rgb_in)$fatal(1,"bypass changed RGB");checked=checked+1;
         end
         @(negedge clk);resetn=0;repeat(4)@(negedge clk);

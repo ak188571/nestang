@@ -64,12 +64,13 @@ module tb_crt_uart;
         header(1,2);repeat(20000)@(negedge clk);
         begin
             string reply="";
-            bit marker=0;
+            bit marker=0,blur_marker=0;
             for(integer k=0;k<received.size();k=k+1)begin
                 reply={reply,received[k]};
                 if(k>=6&&{received[k-6],received[k-5],received[k-4],received[k-3],received[k-2],received[k-1],received[k]}=="CRTSTG1")marker=1;
+                if(k>=6&&{received[k-6],received[k-5],received[k-4],received[k-3],received[k-2],received[k-1],received[k]}=="CRTBLR1")blur_marker=1;
             end
-            if(!marker)$fatal(1,"stage capability not transmitted");
+            if(!marker||!blur_marker)$fatal(1,"stage capability not transmitted");
         end
         $display("CRT UART PASS: real serial packets, frame-applied readback, packet length guard, capability, immediate chord blocking, P1 ownership");$finish;
     end

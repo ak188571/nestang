@@ -58,8 +58,8 @@ module iosys_bl616 #(
     output uart_tx
 );
 
-localparam integer STR_LEN = 89; // number of characters in the config string
-localparam [8*STR_LEN-1:0] CONF_STR = "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1";
+localparam integer STR_LEN = 97; // number of characters in the config string
+localparam [8*STR_LEN-1:0] CONF_STR = "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1;CRTBLR1";
 
 // Remove SPI parameters and add UART parameters
 localparam CLK_FREQ = FREQ;

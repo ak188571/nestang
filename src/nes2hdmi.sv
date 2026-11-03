@@ -156,7 +156,11 @@ reg [$clog2(HEIGHT)-1:0] yy /* xsynthesis syn_keep=1 */;
 reg [10:0] xcnt             /* xsynthesis syn_keep=1 */;
 reg [10:0] ycnt             /* xsynthesis syn_keep=1 */;                  // fractional scaling counters
 reg [9:0] cy_r;
-assign mem_portB_addr = yy * WIDTH + xx + 8*256;
+// Keep the exact legacy read schedule in bypass, including read/write overlap.
+// Only an enabled blur prefetches one pixel to compensate its center register.
+wire blur_enabled=crt_config_active[16] && |crt_config_active[18:17];
+assign mem_portB_addr = blur_enabled ? yy_next * WIDTH + xx_next + 8*256 :
+                                      yy * WIDTH + xx + 8*256;
 wire osd_pixel;
 tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
     .active(overlay),.window(osd_window),.window_toggle(osd_window_toggle),
@@ -164,52 +168,30 @@ tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
 localparam XSTART = (1280 - 960) / 2;   // 960:720 = 4:3
 localparam XSTOP = (1280 + 960) / 2;
 
-// address calculation
-// Assume the video occupies fully on the Y direction, we are upscaling the video by `720/height`.
-// xcnt and ycnt are fractional scaling counters.
-always @(posedge clk_pixel) begin
-    reg active_t;
-    reg [10:0] xcnt_next;
-    reg [10:0] ycnt_next;
-    xcnt_next = xcnt + 256;
-    ycnt_next = ycnt + 224;
-
-    active_t = 0;
-    if (cx == XSTART - 1) begin
-        active_t = 1;
-        active <= 1;
-    end else if (cx == XSTOP - 1) begin
-        active_t = 0;
-        active <= 0;
+// Compute the original scaler's next state without changing its phase.
+// Reading that address one pixel early compensates the CRT center register.
+reg active_next;
+reg [7:0] xx_next,yy_next;
+reg [10:0] xcnt_next,ycnt_next;
+always @* begin
+    active_next=active;xx_next=xx;yy_next=yy;
+    xcnt_next=xcnt;ycnt_next=ycnt;
+    if(cx==XSTART-1)active_next=1;
+    else if(cx==XSTOP-1)active_next=0;
+    if(active || cx==XSTART-1)begin
+        xcnt_next=xcnt+11'd256;
+        if(xcnt_next>=960)begin xcnt_next=xcnt_next-11'd960;xx_next=xx+1'b1;end
     end
-
-    if (active_t | active) begin        // increment xx
-        xcnt <= xcnt_next;
-        if (xcnt_next >= 960) begin
-            xcnt <= xcnt_next - 960;
-            xx <= xx + 1;
-        end
+    if(cy[0]!=cy_r[0])begin
+        ycnt_next=ycnt+11'd224;
+        if(ycnt_next>=720)begin ycnt_next=ycnt_next-11'd720;yy_next=yy+1'b1;end
     end
-
-    cy_r <= cy;
-    if (cy[0] != cy_r[0]) begin         // increment yy at new lines
-        ycnt <= ycnt_next;
-        if (ycnt_next >= 720) begin
-            ycnt <= ycnt_next - 720;
-            yy <= yy + 1;
-        end
-    end
-
-    if (cx == 0) begin
-        xx <= 0;
-        xcnt <= 0;
-    end
-    
-    if (cy == 0) begin
-        yy <= 0;
-        ycnt <= 0;
-    end 
-
+    if(cx==0)begin xx_next=0;xcnt_next=0;end
+    if(cy==0)begin yy_next=0;ycnt_next=0;end
+end
+always @(posedge clk_pixel)begin
+    active<=active_next;xx<=xx_next;yy<=yy_next;
+    xcnt<=xcnt_next;ycnt<=ycnt_next;cy_r<=cy;
 end
 
 // calc rgb value to hdmi
@@ -219,7 +201,9 @@ wire [23:0] game_rgb_crt;
 tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
-crt_filter crt(.rgb_in(NES_PALETTE[mem_portB_rdata]),
+crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
+    .first_pixel(cx==XSTART),.last_pixel(cx==XSTOP-1),
+    .rgb_in(NES_PALETTE[mem_portB_rdata]),
     .config_active(crt_config_active),.rgb_out(game_rgb_crt));
 always @(posedge clk_pixel) begin
     if (active) begin
