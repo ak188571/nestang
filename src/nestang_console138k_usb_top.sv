@@ -363,11 +363,13 @@ GameData game_data(
 // For physical board, there's HDMI, iosys, joypads, and USB
 wire overlay;
 wire [31:0] osd_window;
+wire [31:0] core_config,crt_config_applied;
 wire osd_window_toggle,osd_visible;
 `ifndef MCU_BL616
 assign osd_window=32'h0000201c;
 assign osd_window_toggle=1'b0;
 assign osd_input_block=overlay;
+assign core_config=0;
 `endif
                    // iosys controls overlay
 wire [7:0] overlay_x;
@@ -377,6 +379,7 @@ wire [14:0] overlay_color;      // BGR5
 // HDMI output
 nes2hdmi u_hdmi (     // purple: RGB=440064 (010001000_00000000_01100100), BGR5=01100_00000_01000
     .clk(clk), .resetn(sys_resetn),
+    .core_config(core_config), .crt_config_applied(crt_config_applied),
     .color(color), .cycle(cycle), 
     .scanline(scanline), .sample(sample >> 1),
     .osd_window(osd_window), .osd_window_toggle(osd_window_toggle), .osd_visible(osd_visible),
@@ -395,6 +398,7 @@ iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1)
 
     .osd_window(osd_window), .osd_window_toggle(osd_window_toggle), .osd_visible(osd_visible),
     .osd_input_block(osd_input_block),
+    .core_config(core_config), .crt_config_applied(crt_config_applied),
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y), .overlay_color(overlay_color),
     .joy1(joy1_btns | joy_usb1), .joy2(joy2_btns | joy_usb2),
     .hid1(hid1), .hid2(hid2),

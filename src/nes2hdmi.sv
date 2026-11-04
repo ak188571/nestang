@@ -14,6 +14,9 @@ module nes2hdmi (
     input [15:0] sample,
     input aspect_8x7,       // 1: 8x7 pixel aspect ratio mode
 
+    input [31:0] core_config,
+    output [31:0] crt_config_applied,
+
     // overlay interface
     input overlay,
     input [31:0] osd_window,
@@ -153,7 +156,52 @@ reg [$clog2(HEIGHT)-1:0] yy /* xsynthesis syn_keep=1 */;
 reg [10:0] xcnt             /* xsynthesis syn_keep=1 */;
 reg [10:0] ycnt             /* xsynthesis syn_keep=1 */;                  // fractional scaling counters
 reg [9:0] cy_r;
-assign mem_portB_addr = yy * WIDTH + xx + 8*256;
+// Keep the exact legacy read schedule in bypass, including read/write overlap.
+// Prefetch three pixels for blur, one for scanline alone, zero for bypass.
+wire blur_enabled=crt_config_active[16] && |crt_config_active[18:17];
+wire scan_enabled=crt_config_active[16] && |crt_config_active[20:19];
+// In the game interval 3*256 < 960, so at most one source column advances.
+// The carry condition xcnt+768 >= 960 reduces to xcnt >= 192.
+// Blank margins provide priming time at row boundaries before x=160.
+wire [7:0] xx_three=xx+(xcnt>=11'd192 ? 8'd1 : 8'd0);
+assign mem_portB_addr = blur_enabled ? yy * WIDTH + xx_three + 8*256 :
+                       scan_enabled ? yy_next * WIDTH + xx_next + 8*256 :
+                                      yy * WIDTH + xx + 8*256;
+// Integrate a one-output-pixel-wide dark band at each native source-row end.
+// ycnt advances by 224 modulo 720, so every reachable phase is a multiple of 16.
+// Band overlap with the output-row footprint is triangular, 0..224 (0..14 here).
+// Quantized attenuation preserves its integrated strength over the 45-row cycle.
+function automatic [3:0] native_scan_depth(input [10:0] phase,input [1:0] level);
+    reg [5:0] index;
+    reg [4:0] weight;
+    begin
+        index=phase[9:4];
+        if(index<=17)weight=0;
+        else if(index<31)weight=5'(index-17);
+        else weight=5'(45-index);
+        case(level)
+            1:native_scan_depth=weight<4?0:weight<11?1:2;
+            2:native_scan_depth=weight<2?0:weight<6?1:weight<9?2:weight<13?3:4;
+            3:case(weight)
+                0:native_scan_depth=0;
+                1,2:native_scan_depth=1;
+                3,4:native_scan_depth=2;
+                5,6:native_scan_depth=3;
+                7:native_scan_depth=4;
+                8,9:native_scan_depth=5;
+                10,11:native_scan_depth=6;
+                12,13:native_scan_depth=7;
+                default:native_scan_depth=8;
+            endcase
+            default:native_scan_depth=0;
+        endcase
+    end
+endfunction
+reg [3:0] scan_depth=0;
+always @(posedge clk_pixel)begin
+    if(!resetn)scan_depth<=0;
+    else scan_depth<=native_scan_depth(ycnt,crt_config_active[20:19]);
+end
 wire osd_pixel;
 tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
     .active(overlay),.window(osd_window),.window_toggle(osd_window_toggle),
@@ -161,62 +209,50 @@ tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
 localparam XSTART = (1280 - 960) / 2;   // 960:720 = 4:3
 localparam XSTOP = (1280 + 960) / 2;
 
-// address calculation
-// Assume the video occupies fully on the Y direction, we are upscaling the video by `720/height`.
-// xcnt and ycnt are fractional scaling counters.
-always @(posedge clk_pixel) begin
-    reg active_t;
-    reg [10:0] xcnt_next;
-    reg [10:0] ycnt_next;
-    xcnt_next = xcnt + 256;
-    ycnt_next = ycnt + 224;
-
-    active_t = 0;
-    if (cx == XSTART - 1) begin
-        active_t = 1;
-        active <= 1;
-    end else if (cx == XSTOP - 1) begin
-        active_t = 0;
-        active <= 0;
+// Compute the original scaler's next state without changing its phase.
+// Reading that address one pixel early compensates the CRT center register.
+reg active_next;
+reg [7:0] xx_next,yy_next;
+reg [10:0] xcnt_next,ycnt_next;
+always @* begin
+    active_next=active;xx_next=xx;yy_next=yy;
+    xcnt_next=xcnt;ycnt_next=ycnt;
+    if(cx==XSTART-1)active_next=1;
+    else if(cx==XSTOP-1)active_next=0;
+    if(active || cx==XSTART-1)begin
+        xcnt_next=xcnt+11'd256;
+        if(xcnt_next>=960)begin xcnt_next=xcnt_next-11'd960;xx_next=xx+1'b1;end
     end
-
-    if (active_t | active) begin        // increment xx
-        xcnt <= xcnt_next;
-        if (xcnt_next >= 960) begin
-            xcnt <= xcnt_next - 960;
-            xx <= xx + 1;
-        end
+    if(cy[0]!=cy_r[0])begin
+        ycnt_next=ycnt+11'd224;
+        if(ycnt_next>=720)begin ycnt_next=ycnt_next-11'd720;yy_next=yy+1'b1;end
     end
-
-    cy_r <= cy;
-    if (cy[0] != cy_r[0]) begin         // increment yy at new lines
-        ycnt <= ycnt_next;
-        if (ycnt_next >= 720) begin
-            ycnt <= ycnt_next - 720;
-            yy <= yy + 1;
-        end
-    end
-
-    if (cx == 0) begin
-        xx <= 0;
-        xcnt <= 0;
-    end
-    
-    if (cy == 0) begin
-        yy <= 0;
-        ycnt <= 0;
-    end 
-
+    if(cx==0)begin xx_next=0;xcnt_next=0;end
+    if(cy==0)begin yy_next=0;ycnt_next=0;end
+end
+always @(posedge clk_pixel)begin
+    active<=active_next;xx<=xx_next;yy<=yy_next;
+    xcnt<=xcnt_next;ycnt<=ycnt_next;cy_r<=cy;
 end
 
 // calc rgb value to hdmi
 reg [23:0] NES_PALETTE [0:63];
+wire [31:0] crt_config_active;
+wire [23:0] game_rgb_crt;
+tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
+    .requested(core_config),.frame_start(cx==0 && cy==0),
+    .active_config(crt_config_active),.applied_config(crt_config_applied));
+crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
+    .first_pixel(cx==(blur_enabled?XSTART-1:XSTART)),
+    .last_pixel(cx==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
+    .rgb_in(NES_PALETTE[mem_portB_rdata]),
+    .config_active(crt_config_active),.rgb_out(game_rgb_crt));
 always @(posedge clk_pixel) begin
     if (active) begin
         if (osd_pixel)
             rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
         else
-            rgb <= NES_PALETTE[mem_portB_rdata];
+            rgb <= game_rgb_crt;
     end else
         rgb <= 24'h303030;
 end
