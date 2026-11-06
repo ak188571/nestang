@@ -99,6 +99,7 @@ wire bk_save = 0;
 
 // NES signals
 reg reset_nes = 1;
+wire game_reset;
 reg clkref;
 wire [5:0] color;
 wire [15:0] sample;
@@ -242,7 +243,7 @@ wire [31:0] status;
 
 // Main NES machine
 NES nes(
-    .clk(clk), .reset_nes(reset_nes), .cold_reset(1'b0),
+    .clk(clk), .reset_nes(reset_nes | game_reset), .cold_reset(1'b0),
     .sys_type(system_type), .nes_div(nes_ce),
     .mapper_flags(mapper_flags),
     .sample(sample), .color(color),
@@ -352,6 +353,7 @@ end
 ///////////////////////////
 
 `ifdef VERILATOR
+assign game_reset=1'b0;
 
 // For verilator, the only peripheral is the compiled-in game data 
 GameData game_data(
@@ -392,7 +394,7 @@ nes2hdmi u_hdmi (     // purple: RGB=440064 (010001000_00000000_01100100), BGR5=
 
 
 // Connect to BL616 companion MCU for sys module for menu, rom loading...
-iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1) )     // purple nestang logo
+iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1), .SUPPORT_RESTART(1) )     // purple nestang logo
     sys_inst (
     .clk(clk), .hclk(hclk), .resetn(sys_resetn),
 
@@ -404,7 +406,7 @@ iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1)
     .hid1(hid1), .hid2(hid2),
     .uart_tx(UART_TXD), .uart_rx(UART_RXD),
 
-    .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid)
+    .game_reset(game_reset), .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid)
 );
 
 // Controller input

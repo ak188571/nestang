@@ -11,6 +11,7 @@ module iosys_bl616 #(
     parameter FREQ=21_477_000,
     parameter [14:0] COLOR_LOGO=15'b00000_10101_00000,
     parameter [15:0] CORE_ID=1,     // 1: nestang, 2: snestang
+    parameter SUPPORT_RESTART=0,
     parameter [7:0] LOADING_STATE=0
 )
 (
@@ -34,6 +35,7 @@ module iosys_bl616 #(
     output reg [15:0] hid2,         // USB HID joystick 2
 
     // ROM loading interface
+    output game_reset,             // game logic only; preserve ROM and I/O
     output [7:0] rom_loading,   // 0-to-1 loading starts, 1-to-0 loading is finished
     output reg [7:0] rom_do,        // first 64 bytes are snes header + 32 bytes after snes header 
     output reg rom_do_valid,        // strobe for rom_do
@@ -58,8 +60,9 @@ module iosys_bl616 #(
     output uart_tx
 );
 
-localparam integer STR_LEN = 105; // number of characters in the config string
-localparam [8*STR_LEN-1:0] CONF_STR = "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1;CRTBLR1;CRTSCN1";
+localparam integer STR_LEN = 105 + (SUPPORT_RESTART ? 8 : 0);
+localparam [8*STR_LEN-1:0] CONF_STR = SUPPORT_RESTART ?
+    "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1;CRTBLR1;CRTSCN1;RSTROM1" : "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1;CRTBLR1;CRTSCN1";
 
 // Remove SPI parameters and add UART parameters
 localparam CLK_FREQ = FREQ;
@@ -87,6 +90,12 @@ end
 
 reg [7:0] rom_loading_reg = LOADING_STATE;
 assign rom_loading = rom_loading_reg;
+
+// A 20 ms game-only reset. Repeated packets during reset do not extend it.
+localparam integer RESTART_CYCLES = FREQ/50;
+localparam integer RESTART_BITS = $clog2(RESTART_CYCLES+1);
+reg [RESTART_BITS-1:0] restart_count=0;
+assign game_reset = (restart_count!=0);
 
 // UART receiver signals
 wire [7:0] rx_data;
@@ -183,6 +192,7 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // Command payloads from BL616 to FPGA:
 // 0x01                       get core ID (response type 0x01, see below), frame_len = 1
 // 0x02                       get core config string (response type 0x02, see below)
+// 0x13                       20 ms ROM-preserving game reset (RSTROM1 only)
 // 0x03 x[31:0]               set core config status
 // 0x04 x[7:0] y[7:0]         move overlay text cursor to (x, y)
 // 0x05 <string>              display string from cursor (len implied by frame header, =frame_len-1)
@@ -216,6 +226,7 @@ always @(posedge clk) begin
         rom_loading_reg <= 0;
         rom_remain <= 0;
         core_config <= 0;
+        restart_count <= 0;
         data_cnt <= 0;
         x_wr <= 0;
         y_wr <= 0;
@@ -225,6 +236,7 @@ always @(posedge clk) begin
         cursor_y <= 0;
     end else begin
         rom_do_valid <= 0;
+        if(restart_count!=0)restart_count<=restart_count-1'b1;
         we <= 0;
         mgmt_write <= 0;
         fdd_read_finish <= 0;
@@ -259,6 +271,9 @@ always @(posedge clk) begin
 
             RECV_CMD: if (rx_valid) begin
                 cmd_reg <= rx_data;
+                if(SUPPORT_RESTART && len_reg==1 && rx_data==8'h13 &&
+                   overlay_reg && rom_loading_reg==0 && restart_count==0)
+                    restart_count<=RESTART_CYCLES;
                 if (len_reg==1 && (rx_data == 1 || rx_data == 2 || rx_data == 8'h12))
                     recv_state <= RECV_RESPONSE_REQ;    // request sending core id / config string
                 else if (len_reg > 1)
