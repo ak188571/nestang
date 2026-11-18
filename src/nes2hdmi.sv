@@ -258,11 +258,16 @@ always @(posedge clk_pixel) begin
         composed_rgb <= 24'h303030;
 end
 
+wire [23:0] phosphor_rgb;
 crt_phosphor_mask phosphors(
     .pclk(clk_pixel), .resetn(resetn), .before_first(cx==XSTART-1),
     .odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
     .game_rgb(game_rgb_crt), .gamma_mode(crt_config_active[25:24]),
-        .temperature(crt_config_active[27:26]), .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(rgb));
+        .temperature(crt_config_active[27:26]), .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(phosphor_rgb));
+crt_screen_edges #(.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
+    .pclk(clk_pixel), .resetn(resetn), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
+    .vignette(crt_config_active[28]),
+    .x(cx), .y(cy), .pixel(phosphor_rgb), .rgb_out(rgb));
 
 // HDMI output.
 logic[2:0] tmds;
