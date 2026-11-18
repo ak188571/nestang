@@ -211,6 +211,15 @@ tc_osd_layer osd_layer(.pclk(clk_pixel),.resetn(resetn),.cx(cx),.cy(cy),
 localparam XSTART = (1280 - 960) / 2;   // 960:720 = 4:3
 localparam XSTOP = (1280 + 960) / 2;
 
+localparam BLEED_LATENCY = 4;
+wire bleed_enabled = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
+reg bleed_fetch_active = 0;
+always @(posedge clk_pixel) begin
+    if (cx == XSTART-1-BLEED_LATENCY) bleed_fetch_active <= 1;
+    else if (cx == XSTOP-1-BLEED_LATENCY) bleed_fetch_active <= 0;
+end
+wire bleed_fetch = bleed_fetch_active || cx == XSTART-1-BLEED_LATENCY;
+
 // Compute the original scaler's next state without changing its phase.
 // Reading that address one pixel early compensates the CRT center register.
 reg active_next;
@@ -221,7 +230,7 @@ always @* begin
     xcnt_next=xcnt;ycnt_next=ycnt;
     if(cx==XSTART-1)active_next=1;
     else if(cx==XSTOP-1)active_next=0;
-    if(active || cx==XSTART-1)begin
+    if(bleed_enabled ? bleed_fetch : (active || cx==XSTART-1))begin
         xcnt_next=xcnt+11'd256;
         if(xcnt_next>=960)begin xcnt_next=xcnt_next-11'd960;xx_next=xx+1'b1;end
     end
@@ -254,16 +263,20 @@ tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
 crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
-    .first_pixel(cx==(blur_enabled?XSTART-1:XSTART)),
-    .last_pixel(cx==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
+    .first_pixel(bleed_enabled ? cx==(blur_enabled?XSTART-1-BLEED_LATENCY:XSTART-BLEED_LATENCY) : cx==(blur_enabled?XSTART-1:XSTART)),
+    .last_pixel(bleed_enabled ? cx==(blur_enabled?XSTOP-2-BLEED_LATENCY:XSTOP-1-BLEED_LATENCY) : cx==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
     .rgb_in(NES_PALETTE[mem_portB_rdata]),
     .config_active(crt_config_active),.rgb_out(game_rgb_crt));
+wire [23:0] bleed_rgb;
+crt_chroma_bleed bleed(.pclk(clk_pixel), .first_pixel(cx==XSTART-BLEED_LATENCY),
+    .rgb_in(game_rgb_crt), .rgb_out(bleed_rgb));
+wire [23:0] game_rgb_display = bleed_enabled ? bleed_rgb : game_rgb_crt;
 always @(posedge clk_pixel) begin
     if (active) begin
         if (osd_pixel)
             composed_rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
         else
-            composed_rgb <= game_rgb_crt;
+            composed_rgb <= game_rgb_display;
     end else
         composed_rgb <= 24'h303030;
 end
@@ -272,7 +285,7 @@ wire [23:0] phosphor_rgb;
 crt_phosphor_mask phosphors(
     .pclk(clk_pixel), .resetn(resetn), .before_first(cx==XSTART-1),
     .odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
-    .game_rgb(game_rgb_crt), .gamma_mode(crt_config_active[25:24]),
+    .game_rgb(game_rgb_display), .gamma_mode(crt_config_active[25:24]),
         .temperature(crt_config_active[27:26]), .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(phosphor_rgb));
 crt_screen_edges #(.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
     .pclk(clk_pixel), .resetn(resetn), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
