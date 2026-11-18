@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi (
+module nes2hdmi #(parameter OVERSCAN=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -37,7 +37,8 @@ module nes2hdmi (
 	output       tmds_clk_n,
 	output       tmds_clk_p,
 	output [2:0] tmds_d_n,
-	output [2:0] tmds_d_p
+	output [2:0] tmds_d_p,
+    input [31:0] overscan_widths
 );
 
 // NES generates 256x240. We assume the center 256x224 is visible and scale that to 4:3 aspect ratio.
@@ -239,6 +240,15 @@ end
 // calc rgb value to hdmi
 reg [23:0] NES_PALETTE [0:63];
 wire [31:0] crt_config_active;
+wire [31:0] overscan_active;
+generate if (OVERSCAN) begin : overscan_config
+    // Use the existing frame-boundary mailbox for the independent four-byte word.
+    tc_crt_config widths(.clk(clk), .pclk(clk_pixel), .resetn(resetn),
+        .requested(overscan_widths), .frame_start(cx==0 && cy==0),
+        .active_config(overscan_active), .applied_config());
+end else begin : no_overscan_config
+    assign overscan_active=0;
+end endgenerate
 wire [23:0] game_rgb_crt;
 tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
@@ -267,6 +277,7 @@ crt_phosphor_mask phosphors(
 crt_screen_edges #(.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
     .pclk(clk_pixel), .resetn(resetn), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
     .vignette(crt_config_active[28]), .rounded(crt_config_active[29]),
+    .overscan(crt_config_active[30]), .widths(overscan_active),
     .x(cx), .y(cy), .pixel(phosphor_rgb), .rgb_out(rgb));
 
 // HDMI output.
