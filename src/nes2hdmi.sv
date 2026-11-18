@@ -149,7 +149,8 @@ end
 //
 localparam WIDTH=256;
 localparam HEIGHT=240;
-reg [23:0] rgb;             // actual RGB output
+reg [23:0] composed_rgb;
+wire [23:0] rgb;
 reg active                  /* xsynthesis syn_keep=1 */;
 reg [$clog2(WIDTH)-1:0] xx  /* xsynthesis syn_keep=1 */; // scaled-down pixel position
 reg [$clog2(HEIGHT)-1:0] yy /* xsynthesis syn_keep=1 */;
@@ -250,12 +251,17 @@ crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
 always @(posedge clk_pixel) begin
     if (active) begin
         if (osd_pixel)
-            rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
+            composed_rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
         else
-            rgb <= game_rgb_crt;
+            composed_rgb <= game_rgb_crt;
     end else
-        rgb <= 24'h303030;
+        composed_rgb <= 24'h303030;
 end
+
+crt_phosphor_mask phosphors(
+    .pclk(clk_pixel), .resetn(resetn), .before_first(cx==XSTART-1),
+    .odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
+    .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(rgb));
 
 // HDMI output.
 logic[2:0] tmds;
