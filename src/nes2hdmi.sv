@@ -213,10 +213,29 @@ localparam XSTOP = (1280 + 960) / 2;
 
 localparam BLEED_LATENCY = 4;
 localparam GLOW_LATENCY = 6;
-wire glow_enabled = GLOW && crt_config_active[16] && crt_config_active[15] && cy < FRAMEHEIGHT;
+// Capture the display mode before the first fetch on each line.
+reg glow_enabled=0, bleed_enabled=0;
+reg display_raw=1, display_filtered=0, display_bleed=0;
+wire row_glow = GLOW && crt_config_active[16] && crt_config_active[15] && cy < FRAMEHEIGHT;
+wire row_bleed = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
+always @(posedge clk_pixel) begin
+    if(!resetn) begin
+        glow_enabled <= 0;
+        bleed_enabled <= 0;
+        display_raw <= 1;
+        display_filtered <= 0;
+        display_bleed <= 0;
+    end else if(cx==1) begin
+        glow_enabled <= row_glow;
+        bleed_enabled <= row_bleed;
+        display_bleed <= !row_glow && row_bleed;
+        display_filtered <= !row_glow && !row_bleed && (blur_enabled || scan_enabled);
+        display_raw <= !row_glow && !row_bleed && !(blur_enabled || scan_enabled);
+    end
+end
 // Advance only the game fetch. OSD, crop and HDMI keep physical screen coordinates.
 wire [10:0] sample_x = glow_enabled ? cx + 11'(GLOW_LATENCY) : cx;
-wire bleed_enabled = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
+
 wire fetch_start = bleed_enabled ? sample_x == XSTART-1-BLEED_LATENCY : sample_x == XSTART-1;
 wire fetch_stop  = bleed_enabled ? sample_x == XSTOP-1-BLEED_LATENCY : sample_x == XSTOP-1;
 reg early_active = 0;
@@ -283,7 +302,10 @@ generate if (GLOW) begin : glow_path
     crt_short_glow glow(.pclk(clk_pixel),
         .valid(cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY),
         .pixel(pre_glow_rgb), .result(halo_rgb));
-    assign game_rgb_display = glow_enabled ? halo_rgb : pre_glow_rgb;
+    assign game_rgb_display = ({24{display_raw}} & NES_PALETTE[mem_portB_rdata]) |
+                                  ({24{display_filtered}} & game_rgb_crt) |
+                                  ({24{display_bleed}} & bleed_rgb) |
+                                  ({24{glow_enabled}} & halo_rgb);
 end else begin : no_glow
     assign game_rgb_display = pre_glow_rgb;
 end endgenerate

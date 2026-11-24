@@ -29,6 +29,17 @@ module usb_fs_control_transfer #(
  reg [15:0] requested=0;
  reg [8:0] offset=0;
  reg [7:0] memory[0:BUFFER_SIZE-1];
+ // The SETUP request is bounded by BUFFER_SIZE before the first IN. Compute
+ // the next packet limit during token transmission, before RX_WAIT can accept
+ // a reply. Offset changes only at the end of a successful copy or on start.
+ reg [15:0] remaining;
+ reg [3:0] packet_limit;
+ reg last_full_packet;
+ always @(posedge clk)begin
+  remaining<=requested-{7'd0,offset};
+  packet_limit<=remaining>=16'd8 ? 4'd8 : {1'b0,remaining[2:0]};
+  last_full_packet<=remaining==16'd8;
+ end
  reg expected_toggle=1,duplicate_packet=0,final_packet=0;
  reg [3:0] packet_size=0;
  reg [63:0] packet_data=0;
@@ -149,14 +160,14 @@ module usb_fs_control_transfer #(
       if(stage==STATUS_IN_TOKEN && (rx_pid!=8'h4b || rx_length!=0))fail(4'd4);
       else if(stage==READ_TOKEN && rx_length>8)fail(4'd4);
       else if(stage==READ_TOKEN && (rx_pid==8'h4b)==expected_toggle &&
-              ({7'd0,offset}+{10'd0,rx_length}>requested || int'(offset)+int'(rx_length)>BUFFER_SIZE))fail(4'd5);
+              rx_length[3:0]>packet_limit)fail(4'd5);
       else begin
        transaction_active<=1;
        duplicate_packet<=stage==READ_TOKEN && ((rx_pid==8'h4b)!=expected_toggle);
        packet_data<=rx_data;packet_size<=rx_length[3:0];
        final_packet<=stage==STATUS_IN_TOKEN || rx_length<8;
        // A full 256-byte read also ends by length, without an extra IN.
-       if(stage==READ_TOKEN && {7'd0,offset}+{10'd0,rx_length}==requested)final_packet<=1;
+       if(stage==READ_TOKEN && rx_length==8 && last_full_packet)final_packet<=1;
        gap<=16;state<=ACK_GAP;
       end
      end else begin
