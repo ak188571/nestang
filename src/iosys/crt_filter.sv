@@ -3,7 +3,7 @@
 // result. The caller prefetches three pixels. Bypass retains its original read address and
 // rgb_in passes straight through, including during live framebuffer writes.
 // Scanline alone uses palette_q and requires one pixel of caller prefetch.
-module crt_filter (
+module crt_filter #(parameter ROW_GAINS=0) (
     input wire pclk, resetn,
     input wire [23:0] rgb_in,
     input wire first_pixel, last_pixel,
@@ -66,11 +66,9 @@ module crt_filter (
     wire [23:0] scan_input=strength!=0?blurred_q:palette_q;
     function automatic [7:0] dim_channel;
         input [7:0] c;
-        input [3:0] depth;
-        reg [4:0] gain;
+        input [4:0] gain;
         reg [12:0] total;
         begin
-            gain=5'd16-{1'b0,depth};
             total=c*gain+13'd8;
             dim_channel=total[11:4];
         end
@@ -90,12 +88,26 @@ module crt_filter (
     end
     // Middle band retains about 3/4 of the depth, highlights retain 1/2.
     wire [3:0] middle_depth = scan_depth - (({1'b0, scan_depth} + 5'd2) >> 2);
-    wire [3:0] beam_depth = !config_active[21] ? scan_depth :
-                            beam_class[1] ? (scan_depth >> 1) :
-                            beam_class[0] ? middle_depth : scan_depth;
-    wire [23:0] scanned={dim_channel(scan_input[23:16],beam_depth),
-                    dim_channel(scan_input[15:8],beam_depth),
-                    dim_channel(scan_input[7:0],beam_depth)};
+    wire [4:0] full_gain=5'd16-{1'b0,scan_depth};
+    wire [4:0] mid_gain=5'd16-{1'b0,middle_depth};
+    wire [4:0] high_gain=5'd16-{2'b0,scan_depth[3:1]};
+    wire [4:0] base, mid, high;
+    if (ROW_GAINS) begin : row_gain
+        // Depth changes in the blank left margin. Precompute its three gains
+        // before the game window, leaving the per-pixel beam class aligned.
+        reg [4:0] base_q, mid_q, high_q;
+        always @(posedge pclk) begin
+            base_q<=full_gain; mid_q<=mid_gain; high_q<=high_gain;
+        end
+        assign base=base_q, mid=mid_q, high=high_q;
+    end else begin : direct_gain
+        assign base=full_gain, mid=mid_gain, high=high_gain;
+    end
+    wire [4:0] gain = !config_active[21] ? base :
+                      beam_class[1] ? high : beam_class[0] ? mid : base;
+    wire [23:0] scanned={dim_channel(scan_input[23:16],gain),
+                    dim_channel(scan_input[15:8],gain),
+                    dim_channel(scan_input[7:0],gain)};
     // Raw palette RGB never passes through the gain arithmetic. Master OFF
     // retains the exact legacy read timing; registered effect paths are compensated.
     assign rgb_out=scan_enabled?scanned:strength!=0?blurred_q:rgb_in;
@@ -298,14 +310,14 @@ module crt_short_glow (
     input wire [23:0] pixel,
     output reg [23:0] result
 );
-    reg [6:0] light;
     reg inside_game;
     reg [4:0] h0, h1, h2, h3, h4, lift;
     reg [23:0] c0, c1, c2, c3, center;
+    // c0 isolates the scanline gain from the highlight adder.
+    wire [6:0] light = {2'b0,c0[23:19]} + {1'b0,c0[15:11],1'b0} + {2'b0,c0[7:3]};
     wire [4:0] near_peak = h1 > h3 ? h1 : h3;
     wire [4:0] far_peak = (h0 > h4 ? h0 : h4) >> 1;
     always @(posedge pclk) begin
-        light <= {2'b0,pixel[23:19]} + {1'b0,pixel[15:11],1'b0} + {2'b0,pixel[7:3]};
         inside_game <= valid;
         h0 <= inside_game && light[6:5] == 2'b11 ? light[4:0] : 5'd0;
         h1 <= h0; h2 <= h1; h3 <= h2; h4 <= h3;

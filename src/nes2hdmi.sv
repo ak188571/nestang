@@ -268,7 +268,7 @@ wire [23:0] game_rgb_crt;
 tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
-crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
+crt_filter #(.ROW_GAINS(GLOW)) crt(.pclk(clk_pixel),.resetn(resetn),
     .first_pixel(bleed_enabled ? sample_x==(blur_enabled?XSTART-1-BLEED_LATENCY:XSTART-BLEED_LATENCY) : sample_x==(blur_enabled?XSTART-1:XSTART)),
     .last_pixel(bleed_enabled ? sample_x==(blur_enabled?XSTOP-2-BLEED_LATENCY:XSTOP-1-BLEED_LATENCY) : sample_x==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
     .rgb_in(NES_PALETTE[mem_portB_rdata]),
