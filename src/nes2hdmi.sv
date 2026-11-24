@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0) (
+module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -220,6 +220,12 @@ localparam BLEED_LATENCY = 4;
 localparam GLOW_LATENCY = 6;
 // Capture the display mode before the first fetch on each line.
 reg glow_enabled=0, bleed_enabled=0;
+    reg convergence_enabled=0;
+    always @(posedge clk_pixel) begin
+        if(!resetn) convergence_enabled <= 0;
+        else if(cx==1) convergence_enabled <= CONVERGENCE && crt_config_active[16] &&
+                                               crt_config_active[13] && cy<FRAMEHEIGHT;
+    end
 reg display_raw=1, display_filtered=0, display_bleed=0;
 wire row_glow = GLOW && crt_config_active[16] && crt_config_active[15] && cy < FRAMEHEIGHT;
 wire row_bleed = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
@@ -241,13 +247,13 @@ end
 // Advance only the game fetch. OSD, crop and HDMI keep physical screen coordinates.
 generate if(CURVATURE) begin : curve_path
         crt_curvature map(.pclk(clk_pixel),.cx(cx),.cy(cy),.blur(blur_enabled),.scan(scan_enabled),
-            .bleed(bleed_enabled),.glow(glow_enabled),.source_x(curve_x),.source_y(curve_y),
+            .bleed(bleed_enabled),.glow(glow_enabled),.convergence(convergence_enabled),.source_x(curve_x),.source_y(curve_y),
             .outside_surface(curve_rim));
         assign curve_enabled=crt_config_active[16] && crt_config_active[14];
     end else begin : no_curve
         assign curve_x=0;assign curve_y=0;assign curve_rim=0;assign curve_enabled=0;
     end endgenerate
-    wire [10:0] sample_x = glow_enabled ? cx + 11'(GLOW_LATENCY) : cx;
+    wire [10:0] sample_x = cx + {8'd0,glow_enabled,glow_enabled,convergence_enabled};
 
 wire fetch_start = bleed_enabled ? sample_x == XSTART-1-BLEED_LATENCY : sample_x == XSTART-1;
 wire fetch_stop  = bleed_enabled ? sample_x == XSTOP-1-BLEED_LATENCY : sample_x == XSTOP-1;
@@ -268,7 +274,7 @@ always @* begin
     xcnt_next=xcnt;ycnt_next=ycnt;
     if(cx==XSTART-1)active_next=1;
     else if(cx==XSTOP-1)active_next=0;
-    if((bleed_enabled || glow_enabled) ? early_fetch : (active || cx==XSTART-1))begin
+    if((bleed_enabled || glow_enabled || convergence_enabled) ? early_fetch : (active || cx==XSTART-1))begin
         xcnt_next=xcnt+11'd256;
         if(xcnt_next>=960)begin xcnt_next=xcnt_next-11'd960;xx_next=xx+1'b1;end
     end
@@ -300,7 +306,7 @@ wire [23:0] game_rgb_crt;
 tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
-crt_filter #(.ROW_GAINS(GLOW)) crt(.pclk(clk_pixel),.resetn(resetn),
+crt_filter #(.ROW_GAINS(GLOW),.REGISTER_CONTROLS(CONVERGENCE)) crt(.pclk(clk_pixel),.resetn(resetn),
     .first_pixel(bleed_enabled ? sample_x==(blur_enabled?XSTART-1-BLEED_LATENCY:XSTART-BLEED_LATENCY) : sample_x==(blur_enabled?XSTART-1:XSTART)),
     .last_pixel(bleed_enabled ? sample_x==(blur_enabled?XSTOP-2-BLEED_LATENCY:XSTOP-1-BLEED_LATENCY) : sample_x==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
     .rgb_in(NES_PALETTE[mem_portB_rdata]),
@@ -309,18 +315,26 @@ wire [23:0] bleed_rgb;
 crt_chroma_bleed bleed(.pclk(clk_pixel), .first_pixel(sample_x==XSTART-BLEED_LATENCY),
     .rgb_in(game_rgb_crt), .rgb_out(bleed_rgb));
 wire [23:0] pre_glow_rgb = bleed_enabled ? bleed_rgb : game_rgb_crt;
-wire [23:0] game_rgb_display;
+wire [23:0] game_before_convergence, game_rgb_display;
+    generate if(CONVERGENCE) begin : convergence_path
+        crt_convergence #(.LEFT(XSTART),.RIGHT(XSTOP)) beams(
+            .pclk(clk_pixel),.enabled(convergence_enabled),.x(cx),
+            .ahead(game_before_convergence),.pixel(game_rgb_display));
+    end else begin : no_convergence
+        assign game_rgb_display=game_before_convergence;
+    end endgenerate
 generate if (GLOW) begin : glow_path
     wire [23:0] halo_rgb;
     crt_short_glow glow(.pclk(clk_pixel),
-        .valid(cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY),
+        .valid(convergence_enabled ? (cx >= XSTART-GLOW_LATENCY-1 && cx < XSTOP-GLOW_LATENCY-1) :
+                   (cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY)),
         .pixel(pre_glow_rgb), .result(halo_rgb));
-    assign game_rgb_display = ({24{display_raw}} & NES_PALETTE[mem_portB_rdata]) |
+    assign game_before_convergence = ({24{display_raw}} & NES_PALETTE[mem_portB_rdata]) |
                                   ({24{display_filtered}} & game_rgb_crt) |
                                   ({24{display_bleed}} & bleed_rgb) |
                                   ({24{glow_enabled}} & halo_rgb);
 end else begin : no_glow
-    assign game_rgb_display = pre_glow_rgb;
+    assign game_before_convergence = pre_glow_rgb;
 end endgenerate
 always @(posedge clk_pixel) begin
     if (active) begin

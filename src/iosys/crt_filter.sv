@@ -3,7 +3,7 @@
 // result. The caller prefetches three pixels. Bypass retains its original read address and
 // rgb_in passes straight through, including during live framebuffer writes.
 // Scanline alone uses palette_q and requires one pixel of caller prefetch.
-module crt_filter #(parameter ROW_GAINS=0) (
+module crt_filter #(parameter ROW_GAINS=0, REGISTER_CONTROLS=0) (
     input wire pclk, resetn,
     input wire [23:0] rgb_in,
     input wire first_pixel, last_pixel,
@@ -49,8 +49,28 @@ module crt_filter #(parameter ROW_GAINS=0) (
             endcase
         end
     endfunction
-    wire [1:0] strength=config_active[16]?config_active[18:17]:2'b00;
-    wire [23:0] blurred=strength==0?rgb_in:
+    wire [1:0] requested_strength=config_active[16]?config_active[18:17]:2'b00;
+    wire requested_scan=config_active[16] && |config_active[20:19];
+    wire [1:0] strength;
+    wire scan_enabled, has_blur;
+    if(REGISTER_CONTROLS)begin : frame_controls
+        // The mailbox changes at x=0. Decode once before the first game pixel.
+        reg [1:0] strength_q=0;
+        reg scan_q=0, blur_q=0;
+        always @(posedge pclk)begin
+            strength_q <= requested_strength;
+            scan_q <= requested_scan;
+            blur_q <= |requested_strength;
+        end
+        assign strength=strength_q;
+        assign has_blur=blur_q;
+        assign scan_enabled=scan_q;
+    end else begin : direct_controls
+        assign strength=requested_strength;
+        assign has_blur=|requested_strength;
+        assign scan_enabled=requested_scan;
+    end
+    wire [23:0] blurred=!has_blur?rgb_in:
                    {channel(left[23:16],center[23:16],right[23:16],strength),
                     channel(left[15:8],center[15:8],right[15:8],strength),
                     channel(left[7:0],center[7:0],right[7:0],strength)};
@@ -63,7 +83,7 @@ module crt_filter #(parameter ROW_GAINS=0) (
     end
     // Keep the unregistered blur path completely outside the gain arithmetic.
     // Selecting it before gain would leave a long (mode-incompatible) STA path.
-    wire [23:0] scan_input=strength!=0?blurred_q:palette_q;
+    wire [23:0] scan_input=has_blur ? blurred_q:palette_q;
     function automatic [7:0] dim_channel;
         input [7:0] c;
         input [4:0] gain;
@@ -73,11 +93,10 @@ module crt_filter #(parameter ROW_GAINS=0) (
             dim_channel=total[11:4];
         end
     endfunction
-    wire scan_enabled=config_active[16] && |config_active[20:19];
     // Frame-applied core_config[21]: brightness-dependent scanline depth.
     // Use the source pixel at the FIR center. Capture its brightness class
     // alongside blurred_q (or palette_q when blur is disabled).
-    wire [23:0] beam_pixel = strength != 0 ? center : rgb_in;
+    wire [23:0] beam_pixel = has_blur ?  center : rgb_in;
     wire [3:0] luma = {2'b0, beam_pixel[23:22]} +
                       {1'b0, beam_pixel[15:14], 1'b0} +
                       {2'b0, beam_pixel[7:6]};
@@ -110,7 +129,7 @@ module crt_filter #(parameter ROW_GAINS=0) (
                     dim_channel(scan_input[7:0],gain)};
     // Raw palette RGB never passes through the gain arithmetic. Master OFF
     // retains the exact legacy read timing; registered effect paths are compensated.
-    assign rgb_out=scan_enabled?scanned:strength!=0?blurred_q:rgb_in;
+    assign rgb_out=scan_enabled?scanned:has_blur ? blurred_q:rgb_in;
 endmodule
 
 // The RGB input is the converter's existing registered composite pixel.
@@ -337,7 +356,7 @@ endmodule
 // Each axis contracts in proportion to squared distance on the other axis.
 // Move only the reader ahead; HDMI and OSD keep their original clock and coordinates.
 module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
-    input wire blur, scan, bleed, glow,
+    input wire blur, scan, bleed, glow, convergence,
     output reg [8:0] source_x, source_y, output wire outside_surface);
     function automatic [2:0] x_band(input [9:0] p);
         if(p<10'd17 || p>=10'd943) x_band=3'd7;
@@ -368,11 +387,11 @@ module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
         $readmemh("crt_curve_x.hex",xmap);
         $readmemh("crt_curve_y.hex",ymap);
     end
-    reg [13:0] rim_history=0;
+    reg [14:0] rim_history=0;
     always @(posedge pclk)begin
         if(cx==32)begin
             latency <= (glow ? 4'd6 : 0) + (bleed ? 4'd4 : 0) +
-                       (blur ? 4'd3 : scan ? 4'd1 : 0);
+                       (blur ? 4'd3 : scan ? 4'd1 : 0) + convergence;
             row_band<=y_band(cy);
             lookup_y<=cy;
         end
@@ -384,7 +403,39 @@ module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
         column_band<=x_band(local_x);
         source_x<=xmap[{row_band,lookup_x}];
         source_y<=ymap[{column_band,lookup_y}];
-        rim_history<={rim_history[12:0],source_x[8] || source_y[8]};
+        rim_history<={rim_history[13:0],source_x[8] || source_y[8]};
     end
     assign outside_surface=rim_history[latency];
+endmodule
+
+// The game stream arrives one pixel early when this stage is enabled. Green
+// stays centered. Red points outward and blue inward in the outer quarters.
+// At the ends of a scanline replicate the nearest game pixel.
+module crt_convergence #(parameter LEFT=160, RIGHT=1120)(
+    input wire pclk, enabled, input wire [10:0] x,
+    input wire [23:0] ahead, output wire [23:0] pixel
+);
+    reg [23:0] center=0;
+    reg [7:0] previous_r=0, previous_b=0;
+    reg red_ahead=1, red_center=0, red_previous=0;
+    reg blue_ahead=1, blue_center=0, blue_previous=0;
+    reg keep_center_green=0;
+    wire left_zone = x >= LEFT-1 && x < LEFT+(RIGHT-LEFT)/4-1;
+    wire right_zone = x >= RIGHT-(RIGHT-LEFT)/4-1 && x < RIGHT-1;
+    always @(posedge pclk) begin
+        center <= ahead;
+        previous_r <= center[23:16];
+        previous_b <= center[7:0];
+        // Decide each channel's tap before the new game sample arrives.
+        red_ahead <= !enabled || left_zone;
+        red_center <= enabled && !left_zone && !right_zone;
+        red_previous <= enabled && right_zone;
+        blue_ahead <= !enabled || (right_zone && x!=RIGHT-2);
+        blue_previous <= enabled && left_zone && x!=LEFT-1;
+        blue_center <= enabled && ((!left_zone && !right_zone) || x==LEFT-1 || x==RIGHT-2);
+        keep_center_green <= enabled;
+    end
+    assign pixel[23:16]=({8{red_ahead}} & ahead[23:16]) | ({8{red_center}} & center[23:16]) | ({8{red_previous}} & previous_r);
+    assign pixel[15:8]=keep_center_green ? center[15:8] : ahead[15:8];
+    assign pixel[7:0]=({8{blue_ahead}} & ahead[7:0]) | ({8{blue_center}} & center[7:0]) | ({8{blue_previous}} & previous_b);
 endmodule
