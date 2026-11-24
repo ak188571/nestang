@@ -9,7 +9,7 @@ module crt_filter #(parameter ROW_GAINS=0, REGISTER_CONTROLS=0) (
     input wire first_pixel, last_pixel,
     input wire [3:0] scan_depth, // 0..8 attenuation in sixteenths, from native row phase.
     input wire [31:0] config_active,
-    output wire [23:0] rgb_out
+    output wire [23:0] rgb_out, filtered_only
 );
     reg [23:0] palette_q=0, center=0, previous=0;
     always @(posedge pclk) begin
@@ -130,6 +130,9 @@ module crt_filter #(parameter ROW_GAINS=0, REGISTER_CONTROLS=0) (
     // Raw palette RGB never passes through the gain arithmetic. Master OFF
     // retains the exact legacy read timing; registered effect paths are compensated.
     assign rgb_out=scan_enabled?scanned:has_blur ? blurred_q:rgb_in;
+    // The direct compositor uses this output only with scan or blur active.
+    // Keep the unregistered palette bypass out of that registered filter path.
+    assign filtered_only=scan_enabled ? scanned : blurred_q;
 endmodule
 
 // The RGB input is the converter's existing registered composite pixel.
@@ -355,8 +358,8 @@ endmodule
 // Inverse-map the 960 x 720 game aperture to the 256 x 224 source.
 // Each axis contracts in proportion to squared distance on the other axis.
 // Move only the reader ahead; HDMI and OSD keep their original clock and coordinates.
-module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
-    input wire blur, scan, bleed, glow, convergence,
+module crt_curvature #(parameter BLOOM_LATENCY=1)(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
+    input wire blur, scan, bleed, glow, convergence, bloom,
     output reg [8:0] source_x, source_y, output wire outside_surface);
     function automatic [2:0] x_band(input [9:0] p);
         if(p<10'd17 || p>=10'd943) x_band=3'd7;
@@ -378,7 +381,7 @@ module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
         else if(p<10'd264 || p>=10'd456) y_band=3'd1;
         else y_band=0;
     endfunction
-    reg [3:0] latency=0;
+    reg [4:0] latency=0;
     reg [9:0] local_x=0, lookup_x=0, lookup_y=0;
     reg [2:0] row_band=0, column_band=0;
     reg [8:0] xmap[0:8191] /* synthesis syn_romstyle="block_rom" */;
@@ -387,11 +390,11 @@ module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
         $readmemh("crt_curve_x.hex",xmap);
         $readmemh("crt_curve_y.hex",ymap);
     end
-    reg [14:0] rim_history=0;
+    reg [18:0] rim_history=0;
     always @(posedge pclk)begin
         if(cx==32)begin
             latency <= (glow ? 4'd6 : 0) + (bleed ? 4'd4 : 0) +
-                       (blur ? 4'd3 : scan ? 4'd1 : 0) + convergence;
+                       (blur ? 4'd3 : scan ? 4'd1 : 0) + convergence + (bloom ? BLOOM_LATENCY : 0);
             row_band<=y_band(cy);
             lookup_y<=cy;
         end
@@ -403,7 +406,7 @@ module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
         column_band<=x_band(local_x);
         source_x<=xmap[{row_band,lookup_x}];
         source_y<=ymap[{column_band,lookup_y}];
-        rim_history<={rim_history[13:0],source_x[8] || source_y[8]};
+        rim_history<={rim_history[17:0],source_x[8] || source_y[8]};
     end
     assign outside_surface=rim_history[latency];
 endmodule
@@ -451,7 +454,8 @@ module crt_ntsc_composite #(parameter ADDR_WIDTH=16, DEPTH=61440)(
     input wire clk, pclk, write_pixel, first_row, enable, frame_start,
     input wire [ADDR_WIDTH-1:0] write_addr, read_addr,
     input wire [23:0] native_rgb, raw_rgb,
-    output wire [23:0] pixel
+    output wire [23:0] pixel,corrected_pixel,
+    output wire correction_active
 );
     function automatic [1:0] next_phase(input [1:0] p);
         next_phase=p==2 ? 0 : p+1'b1;
@@ -530,5 +534,7 @@ module crt_ntsc_composite #(parameter ADDR_WIDTH=16, DEPTH=61440)(
     end
     reg [15:0] sample;
     always @(posedge pclk)sample<=decoded[read_addr];
-    assign pixel=enable && display_ready && sample[15] ? {sample[14:10],3'b0,sample[9:5],3'b0,sample[4:0],3'b0} : raw_rgb;
+    assign correction_active=enable && display_ready && sample[15];
+    assign corrected_pixel={sample[14:10],3'b0,sample[9:5],3'b0,sample[4:0],3'b0};
+    assign pixel=correction_active ? corrected_pixel : raw_rgb;
 endmodule
