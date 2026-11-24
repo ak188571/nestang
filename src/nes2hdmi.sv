@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0, NTSC_COMPOSITE=0, BLOOM=0) (
+module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0, NTSC_COMPOSITE=0, BLOOM=0, PERSISTENCE=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -225,6 +225,12 @@ localparam GLOW_LATENCY = 6;
 // Capture the display mode before the first fetch on each line.
 reg glow_enabled=0, bleed_enabled=0;
     reg convergence_enabled=0;
+    wire row_persistence=PERSISTENCE && crt_config_active[16] && crt_config_active[10] && cy<FRAMEHEIGHT;
+    reg persistence_enabled=0;
+    always @(posedge clk_pixel) begin
+        if(!resetn) persistence_enabled<=0;
+        else if(cx==1) persistence_enabled<=row_persistence;
+    end
     reg bloom_enabled=0;
     always @(posedge clk_pixel)begin
         if(!resetn)bloom_enabled<=0;
@@ -235,7 +241,7 @@ reg glow_enabled=0, bleed_enabled=0;
         else if(cx==1) convergence_enabled <= CONVERGENCE && crt_config_active[16] &&
                                                crt_config_active[13] && cy<FRAMEHEIGHT;
     end
-reg raw_palette_or_ntsc=1,raw_bloom=0;
+reg raw_palette_or_ntsc=1,raw_bloom=0,raw_persistence=0;
 reg display_filtered=0, display_bleed=0;
 wire row_glow = GLOW && crt_config_active[16] && crt_config_active[15] && cy < FRAMEHEIGHT;
 wire row_bleed = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
@@ -243,7 +249,7 @@ always @(posedge clk_pixel) begin
     if(!resetn) begin
         glow_enabled <= 0;
         bleed_enabled <= 0;
-        raw_palette_or_ntsc<=1;raw_bloom<=0;
+        raw_palette_or_ntsc<=1;raw_bloom<=0;raw_persistence<=0;
         display_filtered <= 0;
         display_bleed <= 0;
     end else if(cx==1) begin
@@ -251,16 +257,17 @@ always @(posedge clk_pixel) begin
         bleed_enabled <= row_bleed;
         display_bleed <= !row_glow && row_bleed;
         display_filtered <= !row_glow && !row_bleed && (request_blur || request_scan);
-        raw_palette_or_ntsc<=!row_glow && !row_bleed && !(request_blur || request_scan) &&
+        raw_persistence<=!row_glow && !row_bleed && !(request_blur || request_scan) && row_persistence;
+        raw_palette_or_ntsc<=!row_persistence && !row_glow && !row_bleed && !(request_blur || request_scan) &&
                             !(BLOOM && crt_config_active[16] && crt_config_active[11] && cy<FRAMEHEIGHT);
-        raw_bloom<=!row_glow && !row_bleed && !(request_blur || request_scan) &&
+        raw_bloom<=!row_persistence && !row_glow && !row_bleed && !(request_blur || request_scan) &&
                   BLOOM && crt_config_active[16] && crt_config_active[11] && cy<FRAMEHEIGHT;
     end
 end
 // Advance only the game fetch. OSD, crop and HDMI keep physical screen coordinates.
 generate if(CURVATURE) begin : curve_path
         crt_curvature #(.BLOOM_LATENCY(4)) map(.pclk(clk_pixel),.cx(cx),.cy(cy),.blur(blur_enabled),.scan(scan_enabled),
-            .bleed(bleed_enabled),.glow(glow_enabled),.convergence(convergence_enabled),.bloom(bloom_enabled),.source_x(curve_x),.source_y(curve_y),
+            .bleed(bleed_enabled),.glow(glow_enabled),.convergence(convergence_enabled),.bloom(bloom_enabled),.persistence(persistence_enabled),.source_x(curve_x),.source_y(curve_y),
             .outside_surface(curve_rim));
         reg row_curve=0;
         always @(posedge clk_pixel)row_curve<=crt_config_active[16] && crt_config_active[14];
@@ -270,9 +277,15 @@ generate if(CURVATURE) begin : curve_path
     end endgenerate
     wire [10:0] sample_x = cx + {8'd0,glow_enabled,glow_enabled,convergence_enabled};
 
-wire [10:0] fetch_x = sample_x + {bloom_enabled,2'b00};
-    wire fetch_start = bleed_enabled ? fetch_x == XSTART-1-BLEED_LATENCY : fetch_x == XSTART-1;
-wire fetch_stop  = bleed_enabled ? fetch_x == XSTOP-1-BLEED_LATENCY : fetch_x == XSTOP-1;
+// All temporal offsets are constant along this line.
+    reg [10:0] first_fetch=XSTART-1,last_fetch=XSTOP-1;
+    wire [4:0] lead=(glow_enabled ? 5'd6 : 0)+(bleed_enabled ? 5'd4 : 0)+
+                    (bloom_enabled ? 5'd4 : 0)+convergence_enabled+persistence_enabled;
+    always @(posedge clk_pixel) if(cx==32)begin
+        first_fetch<=XSTART-1-lead;last_fetch<=XSTOP-1-lead;
+    end
+    wire fetch_start=cx==first_fetch;
+    wire fetch_stop=cx==last_fetch;
 reg early_active = 0;
 always @(posedge clk_pixel) begin
     if (fetch_start) early_active <= 1;
@@ -290,7 +303,7 @@ always @* begin
     xcnt_next=xcnt;ycnt_next=ycnt;
     if(cx==XSTART-1)active_next=1;
     else if(cx==XSTOP-1)active_next=0;
-    if((bleed_enabled || glow_enabled || convergence_enabled || bloom_enabled) ? early_fetch : (active || cx==XSTART-1))begin
+    if((bleed_enabled || glow_enabled || convergence_enabled || bloom_enabled || persistence_enabled) ? early_fetch : (active || cx==XSTART-1))begin
         xcnt_next=xcnt+11'd256;
         if(xcnt_next>=960)begin xcnt_next=xcnt_next-11'd960;xx_next=xx+1'b1;end
     end
@@ -334,7 +347,18 @@ wire [23:0] decoded_rgb,ntsc_pixel,bloom_pixel;
         assign ntsc_changed=0;assign ntsc_pixel=0;
     end
     endgenerate
-    wire [23:0] source_rgb;
+    wire [23:0] spatial_rgb, source_rgb, persistence_rgb;
+    generate if(PERSISTENCE) begin : persistence_path
+        crt_persistence #(.HEIGHT(240),.DISPLAY_BITS(16),.BLOOM_DELAY(4)) decay(
+            .clk(clk),.pclk(clk_pixel),.resetn(resetn),.requested(crt_config_applied[16] && crt_config_applied[10]),
+            .upcoming_addr({scanline[7:0],cycle[7:0]}),.write_pixel(mem_portA_we),.native_rgb(NES_PALETTE[mem_portA_wdata]),
+            .frame_start(cx==0 && cy==0),.read_addr(mem_portB_addr),.bloom(bloom_enabled),
+            .base_rgb(spatial_rgb),.pixel(persistence_rgb));
+        assign source_rgb=persistence_enabled ? persistence_rgb : spatial_rgb;
+    end else begin
+        assign persistence_rgb=0;
+        assign source_rgb=spatial_rgb;
+    end endgenerate
     generate if(BLOOM)begin : bloom_path
 
         crt_bloom_live mix(
@@ -342,9 +366,9 @@ wire [23:0] decoded_rgb,ntsc_pixel,bloom_pixel;
             .upcoming_x(cycle[7:0]),.upcoming_y(scanline[7:0]),.write_addr(mem_portA_addr),.native_rgb(NES_PALETTE[mem_portA_wdata]),
             .read_addr(mem_portB_addr),.game_rgb(decoded_rgb),
             .frame_start(cx==0 && cy==0),.result(bloom_pixel));
-        assign source_rgb=bloom_enabled ? bloom_pixel : decoded_rgb;
+        assign spatial_rgb=bloom_enabled ? bloom_pixel : decoded_rgb;
     end else begin
-        assign source_rgb=decoded_rgb;assign bloom_pixel=0;
+        assign spatial_rgb=decoded_rgb;assign bloom_pixel=0;
     end
     endgenerate
     wire [23:0] game_rgb_crt,registered_filter_rgb;
@@ -378,7 +402,7 @@ generate if (GLOW) begin : glow_path
     // palette lookup has a direct path to the unfiltered compositor.
     wire [23:0] direct_rgb=({24{raw_palette_or_ntsc && !ntsc_changed}} & NES_PALETTE[mem_portB_rdata]) |
                            ({24{raw_palette_or_ntsc && ntsc_changed}} & ntsc_pixel) |
-                           ({24{raw_bloom}} & bloom_pixel);
+                           ({24{raw_bloom}} & bloom_pixel) | ({24{raw_persistence}} & persistence_rgb);
     assign game_before_convergence = direct_rgb |
                                   ({24{display_filtered}} & registered_filter_rgb) |
                                   ({24{display_bleed}} & bleed_rgb) |

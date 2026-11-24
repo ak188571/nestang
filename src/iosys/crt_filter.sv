@@ -359,7 +359,7 @@ endmodule
 // Each axis contracts in proportion to squared distance on the other axis.
 // Move only the reader ahead; HDMI and OSD keep their original clock and coordinates.
 module crt_curvature #(parameter BLOOM_LATENCY=1)(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
-    input wire blur, scan, bleed, glow, convergence, bloom,
+    input wire blur, scan, bleed, glow, convergence, bloom, persistence,
     output reg [8:0] source_x, source_y, output wire outside_surface);
     function automatic [2:0] x_band(input [9:0] p);
         if(p<10'd17 || p>=10'd943) x_band=3'd7;
@@ -390,11 +390,11 @@ module crt_curvature #(parameter BLOOM_LATENCY=1)(input wire pclk, input wire [1
         $readmemh("crt_curve_x.hex",xmap);
         $readmemh("crt_curve_y.hex",ymap);
     end
-    reg [18:0] rim_history=0;
+    reg [19:0] rim_history=0;
     always @(posedge pclk)begin
         if(cx==32)begin
             latency <= (glow ? 4'd6 : 0) + (bleed ? 4'd4 : 0) +
-                       (blur ? 4'd3 : scan ? 4'd1 : 0) + convergence + (bloom ? BLOOM_LATENCY : 0);
+                       (blur ? 4'd3 : scan ? 4'd1 : 0) + convergence + persistence + (bloom ? BLOOM_LATENCY : 0);
             row_band<=y_band(cy);
             lookup_y<=cy;
         end
@@ -406,7 +406,7 @@ module crt_curvature #(parameter BLOOM_LATENCY=1)(input wire pclk, input wire [1
         column_band<=x_band(local_x);
         source_x<=xmap[{row_band,lookup_x}];
         source_y<=ymap[{column_band,lookup_y}];
-        rim_history<={rim_history[17:0],source_x[8] || source_y[8]};
+        rim_history<={rim_history[18:0],source_x[8] || source_y[8]};
     end
     assign outside_surface=rim_history[latency];
 endmodule

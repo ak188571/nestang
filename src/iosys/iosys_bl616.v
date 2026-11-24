@@ -14,7 +14,7 @@ module iosys_bl616 #(
     parameter SUPPORT_GLOW=0, SUPPORT_CURVE=0,
     parameter SUPPORT_RESTART=0,
     parameter [7:0] LOADING_STATE=0,
-    parameter SUPPORT_CONVERGENCE=0, SUPPORT_NTSC=0, SUPPORT_BLOOM=0
+    parameter SUPPORT_CONVERGENCE=0, SUPPORT_NTSC=0, SUPPORT_BLOOM=0, SUPPORT_PERSISTENCE=0
 )
 (
     input clk,                      // main logic clock
@@ -75,8 +75,10 @@ localparam integer CONV_STR_LEN = CURVE_STR_LEN + (SUPPORT_CONVERGENCE ? 8 : 0);
 localparam [8*CONV_STR_LEN-1:0] CONV_STR = SUPPORT_CONVERGENCE ? {CURVE_STR,";CRTCON1"} : CURVE_STR;
 localparam integer NTSC_STR_LEN = CONV_STR_LEN + (SUPPORT_NTSC ? 8 : 0);
 localparam [8*NTSC_STR_LEN-1:0] NTSC_STR = SUPPORT_NTSC ? {CONV_STR,";CRTNTC1"} : CONV_STR;
-localparam integer STR_LEN = NTSC_STR_LEN + (SUPPORT_BLOOM ? 8 : 0);
-localparam [8*STR_LEN-1:0] CONF_STR = SUPPORT_BLOOM ? {NTSC_STR,";CRTBLM1"} : NTSC_STR;
+localparam integer BLOOM_STR_LEN = NTSC_STR_LEN + (SUPPORT_BLOOM ? 8 : 0);
+localparam [8*BLOOM_STR_LEN-1:0] BLOOM_STR = SUPPORT_BLOOM ? {NTSC_STR,";CRTBLM1"} : NTSC_STR;
+localparam integer STR_LEN = BLOOM_STR_LEN + (SUPPORT_PERSISTENCE ? 8 : 0);
+localparam [8*STR_LEN-1:0] CONF_STR = SUPPORT_PERSISTENCE ? {BLOOM_STR,";CRTPRS1"} : BLOOM_STR;
 
 // Remove SPI parameters and add UART parameters
 localparam CLK_FREQ = FREQ;
