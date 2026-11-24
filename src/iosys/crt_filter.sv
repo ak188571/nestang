@@ -439,3 +439,96 @@ module crt_convergence #(parameter LEFT=160, RIGHT=1120)(
     assign pixel[15:8]=keep_center_green ? center[15:8] : ahead[15:8];
     assign pixel[7:0]=({8{blue_ahead}} & ahead[7:0]) | ({8{blue_center}} & center[7:0]) | ({8{blue_previous}} & previous_b);
 endmodule
+
+// Sampled NTSC-style composite at two samples per native dot, three per carrier
+// cycle. The quadrature axes approximate B-Y and R-Y. With Y=(R+2G+B)/4
+// the three carrier samples are Y+V/2, Y-V/4+U/2, Y-V/4-U/2.
+// A three-sample box decoder centered at the start of a dot takes one sample
+// from the previous dot. By linearity, mix 3/8 of its decoded result into RGB
+// by applying the inverse transform to that one sample's change. This retains
+// flat colors exactly and produces both cross-color and cross-luminance.
+module crt_ntsc_composite #(parameter ADDR_WIDTH=16, DEPTH=61440)(
+    input wire clk, pclk, write_pixel, first_row, enable, frame_start,
+    input wire [ADDR_WIDTH-1:0] write_addr, read_addr,
+    input wire [23:0] native_rgb, raw_rgb,
+    output wire [23:0] pixel
+);
+    function automatic [1:0] next_phase(input [1:0] p);
+        next_phase=p==2 ? 0 : p+1'b1;
+    endfunction
+    function automatic signed [10:0] composite_sample(input [23:0] rgb,input [1:0] phase);
+        reg signed [10:0] r,g,b,y,u,v;
+        begin
+            r=$signed({1'b0,rgb[23:16]});g=$signed({1'b0,rgb[15:8]});b=$signed({1'b0,rgb[7:0]});
+            y=(r+(g<<<1)+b)>>>2;
+            u=b-y;v=r-y;
+            case(phase)
+                0: composite_sample=y+(v>>>1);
+                1: composite_sample=y-(v>>>2)+(u>>>1);
+                default: composite_sample=y-(v>>>2)-(u>>>1);
+            endcase
+        end
+    endfunction
+    function automatic [4:0] quantize(input [7:0] base,input signed [12:0] correction);
+        reg signed [12:0] level;
+        begin
+            level=$signed({1'b0,base})+correction;
+            quantize=level<0 ? 0 : level>255 ? 31 : level[7:3];
+        end
+    endfunction
+    reg [1:0] frame_phase=0,line_phase=0,phase=0;
+    wire first_dot=write_addr[7:0]==0;
+    wire [1:0] line_origin=first_row ? frame_phase : line_phase;
+    reg [23:0] previous=0;
+    reg [23:0] rgb1,rgb2,rgb3;
+    reg [ADDR_WIDTH-1:0] addr1,addr2,addr3;
+    reg [1:0] phase1,phase2;
+    reg valid1=0,valid2=0,valid3=0;
+    reg signed [10:0] left1,here1;
+    reg signed [12:0] delta2;
+    reg signed [12:0] red3,green3,blue3;
+    always @(posedge clk)begin
+        valid1<=write_pixel;valid2<=valid1;valid3<=valid2;
+        if(write_pixel)begin
+            previous<=native_rgb;
+            if(first_dot)begin
+                if(first_row) frame_phase<=next_phase(frame_phase);
+                line_phase<=next_phase(line_origin);
+                phase<=next_phase(next_phase(line_origin));
+            end else phase<=next_phase(next_phase(phase));
+            phase1<=phase;
+            left1<=composite_sample(first_dot ? native_rgb : previous,phase);
+            here1<=composite_sample(native_rgb,phase);
+            rgb1<=native_rgb;addr1<=write_addr;
+        end
+        delta2<=$signed(left1)-$signed(here1);
+        rgb2<=rgb1;addr2<=addr1;phase2<=phase1;
+        case(phase2)
+            0:begin red3<=((delta2<<<2)+delta2)>>>3;green3<=(-delta2)>>>3;blue3<=delta2>>>3;end
+            1:begin red3<=(-delta2)>>>3;green3<=delta2>>>4;blue3<=delta2>>>1;end
+            default:begin red3<=(-delta2)>>>3;green3<=((delta2<<<3)-delta2)>>>4;blue3<=(-delta2)>>>2;end
+        endcase
+        rgb3<=rgb2;addr3<=addr2;
+    end
+    wire [14:0] corrected={quantize(rgb3[23:16],red3),quantize(rgb3[15:8],green3),quantize(rgb3[7:0],blue3)};
+    wire changed=corrected!={rgb3[23:19],rgb3[15:11],rgb3[7:3]};
+    reg [15:0] decoded[0:DEPTH-1] /* synthesis syn_ramstyle="block_ram" */;
+    // Keep the boot image until all history addresses have been written.
+    reg seen_start=0, primed=0;
+    always @(posedge clk)begin
+        if(write_pixel && first_dot && first_row)seen_start<=1;
+        if(valid3)begin
+            decoded[addr3]<={changed,corrected};
+            if(seen_start && addr3==DEPTH-1)primed<=1;
+        end
+    end
+    (* async_reg="true" *) reg [1:0] ready_sync=0;
+    reg display_ready=0;
+    always @(posedge pclk)begin
+        ready_sync<={ready_sync[0],primed};
+        if(frame_start)display_ready<=ready_sync[1];
+    end
+    reg [15:0] sample;
+    always @(posedge pclk)sample<=decoded[read_addr];
+    assign pixel=enable && display_ready && sample[15] ? {sample[14:10],3'b0,sample[9:5],3'b0,sample[4:0],3'b0} : raw_rgb;
+endmodule
