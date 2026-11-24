@@ -290,3 +290,31 @@ module crt_chroma_bleed (
             rgb_out[8*ch +: 8] <= value[9] ? 8'd0 : value[8] ? 8'd255 : value[7:0];
     end
 endmodule
+
+// Symmetric horizontal highlight halo in output pixels. The luma numerator
+// uses five-bit channels with weights 1:2:1. Only its excess above 96 emits.
+module crt_short_glow (
+    input wire pclk, valid,
+    input wire [23:0] pixel,
+    output reg [23:0] result
+);
+    reg [6:0] light;
+    reg inside_game;
+    reg [4:0] h0, h1, h2, h3, h4, lift;
+    reg [23:0] c0, c1, c2, c3, center;
+    wire [4:0] near_peak = h1 > h3 ? h1 : h3;
+    wire [4:0] far_peak = (h0 > h4 ? h0 : h4) >> 1;
+    always @(posedge pclk) begin
+        light <= {2'b0,pixel[23:19]} + {1'b0,pixel[15:11],1'b0} + {2'b0,pixel[7:3]};
+        inside_game <= valid;
+        h0 <= inside_game && light[6:5] == 2'b11 ? light[4:0] : 5'd0;
+        h1 <= h0; h2 <= h1; h3 <= h2; h4 <= h3;
+        c0 <= pixel; c1 <= c0; c2 <= c1; c3 <= c2;
+        center <= c3;
+        lift <= near_peak > far_peak ? near_peak : far_peak;
+    end
+    for (genvar ch=0; ch<3; ch=ch+1) begin : channel
+        wire [8:0] sum = {1'b0,center[ch*8 +: 8]} + {4'b0,lift};
+        always @(posedge pclk) result[ch*8 +: 8] <= sum[8] ? 8'hff : sum[7:0];
+    end
+endmodule

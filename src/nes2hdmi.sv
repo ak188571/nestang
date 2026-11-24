@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi #(parameter OVERSCAN=0) (
+module nes2hdmi #(parameter OVERSCAN=0, GLOW=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -212,13 +212,19 @@ localparam XSTART = (1280 - 960) / 2;   // 960:720 = 4:3
 localparam XSTOP = (1280 + 960) / 2;
 
 localparam BLEED_LATENCY = 4;
+localparam GLOW_LATENCY = 6;
+wire glow_enabled = GLOW && crt_config_active[16] && crt_config_active[15] && cy < FRAMEHEIGHT;
+// Advance only the game fetch. OSD, crop and HDMI keep physical screen coordinates.
+wire [10:0] sample_x = glow_enabled ? cx + 11'(GLOW_LATENCY) : cx;
 wire bleed_enabled = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
-reg bleed_fetch_active = 0;
+wire fetch_start = bleed_enabled ? sample_x == XSTART-1-BLEED_LATENCY : sample_x == XSTART-1;
+wire fetch_stop  = bleed_enabled ? sample_x == XSTOP-1-BLEED_LATENCY : sample_x == XSTOP-1;
+reg early_active = 0;
 always @(posedge clk_pixel) begin
-    if (cx == XSTART-1-BLEED_LATENCY) bleed_fetch_active <= 1;
-    else if (cx == XSTOP-1-BLEED_LATENCY) bleed_fetch_active <= 0;
+    if (fetch_start) early_active <= 1;
+    else if (fetch_stop) early_active <= 0;
 end
-wire bleed_fetch = bleed_fetch_active || cx == XSTART-1-BLEED_LATENCY;
+wire early_fetch = early_active || fetch_start;
 
 // Compute the original scaler's next state without changing its phase.
 // Reading that address one pixel early compensates the CRT center register.
@@ -230,7 +236,7 @@ always @* begin
     xcnt_next=xcnt;ycnt_next=ycnt;
     if(cx==XSTART-1)active_next=1;
     else if(cx==XSTOP-1)active_next=0;
-    if(bleed_enabled ? bleed_fetch : (active || cx==XSTART-1))begin
+    if((bleed_enabled || glow_enabled) ? early_fetch : (active || cx==XSTART-1))begin
         xcnt_next=xcnt+11'd256;
         if(xcnt_next>=960)begin xcnt_next=xcnt_next-11'd960;xx_next=xx+1'b1;end
     end
@@ -263,14 +269,24 @@ tc_crt_config crt_config(.clk(clk),.pclk(clk_pixel),.resetn(resetn),
     .requested(core_config),.frame_start(cx==0 && cy==0),
     .active_config(crt_config_active),.applied_config(crt_config_applied));
 crt_filter crt(.pclk(clk_pixel),.resetn(resetn),
-    .first_pixel(bleed_enabled ? cx==(blur_enabled?XSTART-1-BLEED_LATENCY:XSTART-BLEED_LATENCY) : cx==(blur_enabled?XSTART-1:XSTART)),
-    .last_pixel(bleed_enabled ? cx==(blur_enabled?XSTOP-2-BLEED_LATENCY:XSTOP-1-BLEED_LATENCY) : cx==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
+    .first_pixel(bleed_enabled ? sample_x==(blur_enabled?XSTART-1-BLEED_LATENCY:XSTART-BLEED_LATENCY) : sample_x==(blur_enabled?XSTART-1:XSTART)),
+    .last_pixel(bleed_enabled ? sample_x==(blur_enabled?XSTOP-2-BLEED_LATENCY:XSTOP-1-BLEED_LATENCY) : sample_x==(blur_enabled?XSTOP-2:XSTOP-1)),.scan_depth(scan_depth),
     .rgb_in(NES_PALETTE[mem_portB_rdata]),
     .config_active(crt_config_active),.rgb_out(game_rgb_crt));
 wire [23:0] bleed_rgb;
-crt_chroma_bleed bleed(.pclk(clk_pixel), .first_pixel(cx==XSTART-BLEED_LATENCY),
+crt_chroma_bleed bleed(.pclk(clk_pixel), .first_pixel(sample_x==XSTART-BLEED_LATENCY),
     .rgb_in(game_rgb_crt), .rgb_out(bleed_rgb));
-wire [23:0] game_rgb_display = bleed_enabled ? bleed_rgb : game_rgb_crt;
+wire [23:0] pre_glow_rgb = bleed_enabled ? bleed_rgb : game_rgb_crt;
+wire [23:0] game_rgb_display;
+generate if (GLOW) begin : glow_path
+    wire [23:0] halo_rgb;
+    crt_short_glow glow(.pclk(clk_pixel),
+        .valid(cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY),
+        .pixel(pre_glow_rgb), .result(halo_rgb));
+    assign game_rgb_display = glow_enabled ? halo_rgb : pre_glow_rgb;
+end else begin : no_glow
+    assign game_rgb_display = pre_glow_rgb;
+end endgenerate
 always @(posedge clk_pixel) begin
     if (active) begin
         if (osd_pixel)
