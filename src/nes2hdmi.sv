@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi #(parameter OVERSCAN=0, GLOW=0) (
+module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -79,6 +79,10 @@ localparam MEM_ABITS=16;
 
 logic [5:0] mem [0:256*240-1];
 logic [15:0] mem_portA_addr;
+    wire [8:0] curve_x,curve_y;
+    wire curve_rim;
+    wire curve_enabled;
+
 logic [5:0] mem_portA_wdata;
 logic mem_portA_we;
 
@@ -166,7 +170,8 @@ wire scan_enabled=crt_config_active[16] && |crt_config_active[20:19];
 // The carry condition xcnt+768 >= 960 reduces to xcnt >= 192.
 // Blank margins provide priming time at row boundaries before x=160.
 wire [7:0] xx_three=xx+(xcnt>=11'd192 ? 8'd1 : 8'd0);
-assign mem_portB_addr = blur_enabled ? yy * WIDTH + xx_three + 8*256 :
+assign mem_portB_addr = curve_enabled ? {(8'd8+curve_y[7:0]),curve_x[7:0]} :
+                            blur_enabled ? yy * WIDTH + xx_three + 8*256 :
                        scan_enabled ? yy_next * WIDTH + xx_next + 8*256 :
                                       yy * WIDTH + xx + 8*256;
 // Integrate a one-output-pixel-wide dark band at each native source-row end.
@@ -234,7 +239,15 @@ always @(posedge clk_pixel) begin
     end
 end
 // Advance only the game fetch. OSD, crop and HDMI keep physical screen coordinates.
-wire [10:0] sample_x = glow_enabled ? cx + 11'(GLOW_LATENCY) : cx;
+generate if(CURVATURE) begin : curve_path
+        crt_curvature map(.pclk(clk_pixel),.cx(cx),.cy(cy),.blur(blur_enabled),.scan(scan_enabled),
+            .bleed(bleed_enabled),.glow(glow_enabled),.source_x(curve_x),.source_y(curve_y),
+            .outside_surface(curve_rim));
+        assign curve_enabled=crt_config_active[16] && crt_config_active[14];
+    end else begin : no_curve
+        assign curve_x=0;assign curve_y=0;assign curve_rim=0;assign curve_enabled=0;
+    end endgenerate
+    wire [10:0] sample_x = glow_enabled ? cx + 11'(GLOW_LATENCY) : cx;
 
 wire fetch_start = bleed_enabled ? sample_x == XSTART-1-BLEED_LATENCY : sample_x == XSTART-1;
 wire fetch_stop  = bleed_enabled ? sample_x == XSTOP-1-BLEED_LATENCY : sample_x == XSTOP-1;
@@ -325,9 +338,9 @@ crt_phosphor_mask phosphors(
     .odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
     .game_rgb(game_rgb_display), .gamma_mode(crt_config_active[25:24]),
         .temperature(crt_config_active[27:26]), .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(phosphor_rgb));
-crt_screen_edges #(.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
+crt_screen_edges #(.CURVATURE(CURVATURE),.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
     .pclk(clk_pixel), .resetn(resetn), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
-    .vignette(crt_config_active[28]), .rounded(crt_config_active[29]),
+    .curve_rim(curve_enabled && curve_rim),.vignette(crt_config_active[28]), .rounded(crt_config_active[29]),
     .overscan(crt_config_active[30]), .widths(overscan_active),
     .x(cx), .y(cy), .pixel(phosphor_rgb), .rgb_out(rgb));
 

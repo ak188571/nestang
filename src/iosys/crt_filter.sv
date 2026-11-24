@@ -179,6 +179,7 @@ endmodule
 // Screen-space effects for the active game rectangle. The control registers
 // advance on the same edge as the converter's existing RGB compositor.
 module crt_screen_edges #(
+    parameter CURVATURE=0,
     parameter integer LEFT = 160, RIGHT = 1120, HEIGHT = 720
 ) (
     input wire pclk, resetn, game_pixel, vignette, rounded, overscan,
@@ -186,7 +187,8 @@ module crt_screen_edges #(
     input wire [10:0] x,
     input wire [9:0] y,
     input wire [23:0] pixel,
-    output wire [23:0] rgb_out
+    output wire [23:0] rgb_out,
+    input wire curve_rim
 );
     // A 32-pixel quarter-circle sampled at pixel centers. The table gives
     // the number of pixels to replace at either end of this scanline.
@@ -237,7 +239,7 @@ module crt_screen_edges #(
     always @(posedge pclk) begin
         gain <= resetn && game_pixel && vignette ?
                 8'd128 - line_loss - column_loss : 8'd128;
-        cut <= resetn && game_pixel && ((rounded && dx < inset) || (overscan && cropped));
+        cut <= resetn && game_pixel && ((CURVATURE && curve_rim) || (rounded && dx < inset) || (overscan && cropped));
     end
 
     // Unity gain retains every bit, including OSD and the existing phosphor mask.
@@ -329,4 +331,60 @@ module crt_short_glow (
         wire [8:0] sum = {1'b0,center[ch*8 +: 8]} + {4'b0,lift};
         always @(posedge pclk) result[ch*8 +: 8] <= sum[8] ? 8'hff : sum[7:0];
     end
+endmodule
+
+// Inverse-map the 960 x 720 game aperture to the 256 x 224 source.
+// Each axis contracts in proportion to squared distance on the other axis.
+// Move only the reader ahead; HDMI and OSD keep their original clock and coordinates.
+module crt_curvature(input wire pclk, input wire [10:0] cx, input wire [9:0] cy,
+    input wire blur, scan, bleed, glow,
+    output reg [8:0] source_x, source_y, output wire outside_surface);
+    function automatic [2:0] x_band(input [9:0] p);
+        if(p<10'd17 || p>=10'd943) x_band=3'd7;
+        else if(p<10'd55 || p>=10'd905) x_band=3'd6;
+        else if(p<10'd95 || p>=10'd865) x_band=3'd5;
+        else if(p<10'd141 || p>=10'd819) x_band=3'd4;
+        else if(p<10'd193 || p>=10'd767) x_band=3'd3;
+        else if(p<10'd258 || p>=10'd702) x_band=3'd2;
+        else if(p<10'd352 || p>=10'd608) x_band=3'd1;
+        else x_band=0;
+    endfunction
+    function automatic [2:0] y_band(input [9:0] p);
+        if(p<10'd13 || p>=10'd707) y_band=3'd7;
+        else if(p<10'd41 || p>=10'd679) y_band=3'd6;
+        else if(p<10'd71 || p>=10'd649) y_band=3'd5;
+        else if(p<10'd105 || p>=10'd615) y_band=3'd4;
+        else if(p<10'd145 || p>=10'd575) y_band=3'd3;
+        else if(p<10'd193 || p>=10'd527) y_band=3'd2;
+        else if(p<10'd264 || p>=10'd456) y_band=3'd1;
+        else y_band=0;
+    endfunction
+    reg [3:0] latency=0;
+    reg [9:0] local_x=0, lookup_x=0, lookup_y=0;
+    reg [2:0] row_band=0, column_band=0;
+    reg [8:0] xmap[0:8191] /* synthesis syn_romstyle="block_rom" */;
+    reg [8:0] ymap[0:8191] /* synthesis syn_romstyle="block_rom" */;
+    initial begin
+        $readmemh("crt_curve_x.hex",xmap);
+        $readmemh("crt_curve_y.hex",ymap);
+    end
+    reg [13:0] rim_history=0;
+    always @(posedge pclk)begin
+        if(cx==32)begin
+            latency <= (glow ? 4'd6 : 0) + (bleed ? 4'd4 : 0) +
+                       (blur ? 4'd3 : scan ? 4'd1 : 0);
+            row_band<=y_band(cy);
+            lookup_y<=cy;
+        end
+        // At cx=65 the local index is 65-160+3+latency (modulo 1024).
+        // The three clocks cover the index register, map ROM and framebuffer.
+        if(cx==64)local_x<=10'd932+latency;
+        else local_x<=local_x+1'b1;
+        lookup_x<=local_x;
+        column_band<=x_band(local_x);
+        source_x<=xmap[{row_band,lookup_x}];
+        source_y<=ymap[{column_band,lookup_y}];
+        rim_history<={rim_history[12:0],source_x[8] || source_y[8]};
+    end
+    assign outside_surface=rim_history[latency];
 endmodule

@@ -11,7 +11,7 @@ module iosys_bl616 #(
     parameter FREQ=21_477_000,
     parameter [14:0] COLOR_LOGO=15'b00000_10101_00000,
     parameter [15:0] CORE_ID=1,     // 1: nestang, 2: snestang
-    parameter SUPPORT_GLOW=0,
+    parameter SUPPORT_GLOW=0, SUPPORT_CURVE=0,
     parameter SUPPORT_RESTART=0,
     parameter [7:0] LOADING_STATE=0
 )
@@ -66,8 +66,10 @@ localparam integer CORE_STR_LEN = 105 + (SUPPORT_RESTART ? 8 : 0);
 localparam [8*CORE_STR_LEN-1:0] CORE_CONF_STR = SUPPORT_RESTART ?
     "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1;CRTBLR1;CRTSCN1;RSTROM1" : "Tangcores;-;O12,OSD key,Right+Select,Select+Start,Select+RB;-;V,v20240101;OSDWIN1;CRTSTG1;CRTBLR1;CRTSCN1";
 
-localparam integer STR_LEN = CORE_STR_LEN + (SUPPORT_GLOW ? 8 : 0);
-localparam [8*STR_LEN-1:0] CONF_STR = SUPPORT_GLOW ? {CORE_CONF_STR,";CRTGLO1"} : CORE_CONF_STR;
+localparam integer GLOW_STR_LEN = CORE_STR_LEN + (SUPPORT_GLOW ? 8 : 0);
+localparam [8*GLOW_STR_LEN-1:0] GLOW_STR = SUPPORT_GLOW ? {CORE_CONF_STR,";CRTGLO1"} : CORE_CONF_STR;
+localparam integer STR_LEN = GLOW_STR_LEN + (SUPPORT_CURVE ? 8 : 0);
+localparam [8*STR_LEN-1:0] CONF_STR = SUPPORT_CURVE ? {GLOW_STR,";CRTCUR1"} : GLOW_STR;
 
 // Remove SPI parameters and add UART parameters
 localparam CLK_FREQ = FREQ;
