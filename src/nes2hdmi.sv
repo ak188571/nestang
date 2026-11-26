@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0, NTSC_COMPOSITE=0, BLOOM=0, PERSISTENCE=0) (
+module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0, NTSC_COMPOSITE=0, BLOOM=0, PERSISTENCE=0, BEAM_SPOT=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -243,7 +243,17 @@ reg glow_enabled=0, bleed_enabled=0;
     end
 reg raw_palette_or_ntsc=1,raw_bloom=0,raw_persistence=0;
 reg display_filtered=0, display_bleed=0;
-wire row_glow = GLOW && crt_config_active[16] && crt_config_active[15] && cy < FRAMEHEIGHT;
+// Spot and Glow share the six-clock centered window and its prefetch.
+    wire row_glow = crt_config_active[16] && cy < FRAMEHEIGHT &&
+                    ((GLOW && crt_config_active[15]) || (BEAM_SPOT && crt_config_active[9]));
+    reg spot_on=0, halo_on=0, outer_row=0;
+    always @(posedge clk_pixel) begin
+        if(cx==1) begin
+            spot_on <= BEAM_SPOT && crt_config_active[16] && crt_config_active[9];
+            halo_on <= GLOW && crt_config_active[16] && crt_config_active[15];
+        end
+        outer_row <= ycnt < 160 || ycnt >= 560;
+    end
 wire row_bleed = crt_config_active[16] && crt_config_active[31] && cy < FRAMEHEIGHT;
 always @(posedge clk_pixel) begin
     if(!resetn) begin
@@ -392,9 +402,10 @@ wire [23:0] game_before_convergence, game_rgb_display;
     end else begin : no_convergence
         assign game_rgb_display=game_before_convergence;
     end endgenerate
-generate if (GLOW) begin : glow_path
+generate if (GLOW || BEAM_SPOT) begin : glow_path
     wire [23:0] halo_rgb;
-    crt_short_glow glow(.pclk(clk_pixel),
+    crt_short_glow #(.BEAM_SPOT(BEAM_SPOT)) glow(.pclk(clk_pixel),
+            .spot(spot_on),.halo(halo_on),.outer_row(outer_row),
         .valid(convergence_enabled ? (cx >= XSTART-GLOW_LATENCY-1 && cx < XSTOP-GLOW_LATENCY-1) :
                    (cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY)),
         .pixel(pre_glow_rgb), .result(halo_rgb));

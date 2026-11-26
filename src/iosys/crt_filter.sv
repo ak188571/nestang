@@ -329,10 +329,11 @@ endmodule
 
 // Symmetric horizontal highlight halo in output pixels. The luma numerator
 // uses five-bit channels with weights 1:2:1. Only its excess above 96 emits.
-module crt_short_glow (
+module crt_short_glow #(parameter BEAM_SPOT=0) (
     input wire pclk, valid,
     input wire [23:0] pixel,
-    output reg [23:0] result
+    output reg [23:0] result,
+    input wire spot, halo, outer_row
 );
     reg inside_game;
     reg [4:0] h0, h1, h2, h3, h4, lift;
@@ -343,13 +344,32 @@ module crt_short_glow (
     wire [4:0] far_peak = (h0 > h4 ? h0 : h4) >> 1;
     always @(posedge pclk) begin
         inside_game <= valid;
-        h0 <= inside_game && light[6:5] == 2'b11 ? light[4:0] : 5'd0;
+        h0 <= (!BEAM_SPOT || halo) && inside_game && light[6:5] == 2'b11 ? light[4:0] : 5'd0;
         h1 <= h0; h2 <= h1; h3 <= h2; h4 <= h3;
         c0 <= pixel; c1 <= c0; c2 <= c1; c3 <= c2;
-        center <= c3;
+
         lift <= near_peak > far_peak ? near_peak : far_peak;
     end
     for (genvar ch=0; ch<3; ch=ch+1) begin : channel
+        if (BEAM_SPOT) begin : spot_profile
+            // Each phosphor contributes a colored shoulder one HDMI pixel
+            // to either side. Bright primaries emit even on a dark background.
+            wire [7:0] source = c0[ch*8 +: 8];
+            wire [7:0] wing = (source >> 1) + (source[6] ? (source >> 3) : 8'd0);
+            reg [7:0] w0,w1,w2,w3;
+            reg [7:0] core1,core2,core3;
+            always @(posedge pclk) begin
+                w0 <= spot && inside_game && source[7] ? (outer_row ? wing >> 1 : wing) : 0;
+                w1 <= w0; w2 <= w1; w3 <= w2;
+                core1 <= spot && outer_row ? source - (source >> 2) : source;
+                core2 <= core1; core3 <= core2;
+                // w1 and w3 are the adjacent samples when core3 is centered.
+                center[ch*8 +: 8] <= core3 >= w1 && core3 >= w3 ? core3 :
+                                      w1 >= w3 ? w1 : w3;
+            end
+        end else begin : glow_center
+            always @(posedge pclk) center[ch*8 +: 8] <= c3[ch*8 +: 8];
+        end
         wire [8:0] sum = {1'b0,center[ch*8 +: 8]} + {4'b0,lift};
         always @(posedge pclk) result[ch*8 +: 8] <= sum[8] ? 8'hff : sum[7:0];
     end
