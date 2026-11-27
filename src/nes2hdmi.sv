@@ -247,11 +247,12 @@ reg raw_palette_or_ntsc=1,raw_bloom=0,raw_persistence=0;
 reg display_filtered=0, display_bleed=0;
 // Spot and Glow share the six-clock centered window and its prefetch.
     wire row_glow = crt_config_active[16] && cy < FRAMEHEIGHT &&
-                    ((GLOW && crt_config_active[15]) || (BEAM_SPOT && crt_config_active[9]));
-    reg spot_on=0, halo_on=0, outer_row=0;
+                    ((GLOW && crt_config_active[15]) || (BEAM_SPOT && crt_config_active[9]) || (CRT_REV>=3 && crt_config_active[6]));
+    reg spot_on=0, halo_on=0, outer_row=0, focus_on=0;
     always @(posedge clk_pixel) begin
         if(cx==1) begin
             spot_on <= BEAM_SPOT && crt_config_active[16] && crt_config_active[9];
+            focus_on <= CRT_REV>=3 && crt_config_active[16] && crt_config_active[6];
             halo_on <= GLOW && crt_config_active[16] && crt_config_active[15];
         end
         outer_row <= ycnt < 160 || ycnt >= 560;
@@ -399,14 +400,19 @@ wire [23:0] pre_glow_rgb = bleed_enabled ? bleed_rgb : game_rgb_crt;
 wire [23:0] game_before_convergence, game_rgb_display;
     generate if(CONVERGENCE) begin : convergence_path
         crt_convergence #(.LEFT(XSTART),.RIGHT(XSTOP)) beams(
-            .pclk(clk_pixel),.enabled(convergence_enabled),.x(cx),
+            .pclk(clk_pixel),.enabled(convergence_enabled),.x(cx),.y(cy),.position_mode(CRT_REV>=3 && crt_config_active[5]),
             .ahead(game_before_convergence),.pixel(game_rgb_display));
     end else begin : no_convergence
         assign game_rgb_display=game_before_convergence;
     end endgenerate
 generate if (GLOW || BEAM_SPOT) begin : glow_path
     wire [23:0] halo_rgb;
-    crt_short_glow #(.BEAM_SPOT(BEAM_SPOT)) glow(.pclk(clk_pixel),
+    crt_short_glow #(.BEAM_SPOT(BEAM_SPOT),.CRT_REV(CRT_REV)) glow(.pclk(clk_pixel),
+            // The focus result reaches the compositor two clocks later,
+            // with one extra clock when convergence centers the stream.
+            .focus(focus_on && (cy<96 || cy>=624 ||
+                (convergence_enabled ? cx<XSTART+144-3 || cx>=XSTOP-144-3 :
+                                       cx<XSTART+144-2 || cx>=XSTOP-144-2))),
             .spot(spot_on),.halo(halo_on),.outer_row(outer_row),
         .valid(convergence_enabled ? (cx >= XSTART-GLOW_LATENCY-1 && cx < XSTOP-GLOW_LATENCY-1) :
                    (cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY)),

@@ -350,11 +350,11 @@ endmodule
 
 // Symmetric horizontal highlight halo in output pixels. The luma numerator
 // uses five-bit channels with weights 1:2:1. Only its excess above 96 emits.
-module crt_short_glow #(parameter BEAM_SPOT=0) (
+module crt_short_glow #(parameter BEAM_SPOT=0, CRT_REV=0) (
     input wire pclk, valid,
     input wire [23:0] pixel,
     output reg [23:0] result,
-    input wire spot, halo, outer_row
+    input wire spot, halo, outer_row, focus
 );
     reg inside_game;
     reg [4:0] h0, h1, h2, h3, h4, lift;
@@ -379,13 +379,25 @@ module crt_short_glow #(parameter BEAM_SPOT=0) (
             wire [7:0] wing = (source >> 1) + (source[6] ? (source >> 3) : 8'd0);
             reg [7:0] w0,w1,w2,w3;
             reg [7:0] core1,core2,core3;
+            reg valid1,valid2;
+            reg [8:0] pair_sum,previous_pair;
+            // Adjacent pair sums share the center sample. Replicate it at
+            // the aperture limits so that blanking never enters the kernel.
+            always @(posedge pclk) begin
+                valid1<=inside_game; valid2<=valid1;
+                pair_sum<={1'b0,(valid1 ? core1 : core2)}+
+                          {1'b0,(valid2 ? core2 : core1)};
+                previous_pair<=pair_sum;
+            end
+            wire [9:0] weighted={1'b0,pair_sum}+{1'b0,previous_pair}+10'd2;
+            wire [7:0] focused=CRT_REV>=3 && focus ? weighted[9:2] : core3;
             always @(posedge pclk) begin
                 w0 <= spot && inside_game && source[7] ? (outer_row ? wing >> 1 : wing) : 0;
                 w1 <= w0; w2 <= w1; w3 <= w2;
                 core1 <= spot && outer_row ? source - (source >> 2) : source;
                 core2 <= core1; core3 <= core2;
                 // w1 and w3 are the adjacent samples when core3 is centered.
-                center[ch*8 +: 8] <= core3 >= w1 && core3 >= w3 ? core3 :
+                center[ch*8 +: 8] <= focused >= w1 && focused >= w3 ? focused :
                                       w1 >= w3 ? w1 : w3;
             end
         end else begin : glow_center
@@ -456,7 +468,7 @@ endmodule
 // stays centered. Red points outward and blue inward in the outer quarters.
 // At the ends of a scanline replicate the nearest game pixel.
 module crt_convergence #(parameter LEFT=160, RIGHT=1120)(
-    input wire pclk, enabled, input wire [10:0] x,
+    input wire pclk, enabled, input wire [10:0] x, input wire [9:0] y, input wire position_mode,
     input wire [23:0] ahead, output wire [23:0] pixel
 );
     reg [23:0] center=0;
@@ -464,8 +476,17 @@ module crt_convergence #(parameter LEFT=160, RIGHT=1120)(
     reg red_ahead=1, red_center=0, red_previous=0;
     reg blue_ahead=1, blue_center=0, blue_previous=0;
     reg keep_center_green=0;
-    wire left_zone = x >= LEFT-1 && x < LEFT+(RIGHT-LEFT)/4-1;
-    wire right_zone = x >= RIGHT-(RIGHT-LEFT)/4-1 && x < RIGHT-1;
+    // The red/blue displacement reaches farther in from the four corners.
+    // Latch zone limits in horizontal blanking, well ahead of game pixels.
+    reg [10:0] left_end=LEFT+(RIGHT-LEFT)/4-1,right_start=RIGHT-(RIGHT-LEFT)/4-1;
+    always @(posedge pclk) if(x==32)begin
+        if(!position_mode)begin left_end<=LEFT+(RIGHT-LEFT)/4-1;right_start<=RIGHT-(RIGHT-LEFT)/4-1;end
+        else if(y<100 || y>=620)begin left_end<=LEFT+359;right_start<=RIGHT-361;end
+        else if(y<200 || y>=520)begin left_end<=LEFT+223;right_start<=RIGHT-225;end
+        else begin left_end<=LEFT+95;right_start<=RIGHT-97;end
+    end
+    wire left_zone = x >= LEFT-1 && x < left_end;
+    wire right_zone = x >= right_start && x < RIGHT-1;
     always @(posedge pclk) begin
         center <= ahead;
         previous_r <= center[23:16];
