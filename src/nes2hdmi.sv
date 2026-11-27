@@ -247,11 +247,13 @@ reg raw_palette_or_ntsc=1,raw_bloom=0,raw_persistence=0;
 reg display_filtered=0, display_bleed=0;
 // Spot and Glow share the six-clock centered window and its prefetch.
     wire row_glow = crt_config_active[16] && cy < FRAMEHEIGHT &&
-                    ((GLOW && crt_config_active[15]) || (BEAM_SPOT && crt_config_active[9]) || (CRT_REV>=3 && crt_config_active[6]));
-    reg spot_on=0, halo_on=0, outer_row=0, focus_on=0;
+                    ((GLOW && crt_config_active[15]) || (BEAM_SPOT && crt_config_active[9]) || (CRT_REV>=3 && crt_config_active[6]) ||
+                     (CRT_REV>=5 && crt_config_active[3]));
+    reg spot_on=0, halo_on=0, outer_row=0, focus_on=0, phosphor_color=0;
     always @(posedge clk_pixel) begin
         if(cx==1) begin
             spot_on <= BEAM_SPOT && crt_config_active[16] && crt_config_active[9];
+            phosphor_color <= CRT_REV>=5 && crt_config_active[16] && crt_config_active[3];
             focus_on <= CRT_REV>=3 && crt_config_active[16] && crt_config_active[6];
             halo_on <= GLOW && crt_config_active[16] && crt_config_active[15];
         end
@@ -414,7 +416,7 @@ generate if (GLOW || BEAM_SPOT) begin : glow_path
             .focus(focus_on && (cy<96 || cy>=624 ||
                 (convergence_enabled ? cx<XSTART+144-3 || cx>=XSTOP-144-3 :
                                        cx<XSTART+144-2 || cx>=XSTOP-144-2))),
-            .spot(spot_on),.halo(halo_on),.outer_row(outer_row),
+            .emission(phosphor_color),.spot(spot_on),.halo(halo_on),.outer_row(outer_row),
         .valid(convergence_enabled ? (cx >= XSTART-GLOW_LATENCY-1 && cx < XSTOP-GLOW_LATENCY-1) :
                    (cx >= XSTART-GLOW_LATENCY && cx < XSTOP-GLOW_LATENCY)),
         .pixel(pre_glow_rgb), .result(halo_rgb));

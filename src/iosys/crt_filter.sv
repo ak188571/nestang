@@ -354,7 +354,7 @@ module crt_short_glow #(parameter BEAM_SPOT=0, CRT_REV=0) (
     input wire pclk, valid,
     input wire [23:0] pixel,
     output reg [23:0] result,
-    input wire spot, halo, outer_row, focus
+    input wire spot, halo, outer_row, focus, emission
 );
     reg inside_game;
     reg [4:0] h0, h1, h2, h3, h4, lift;
@@ -375,7 +375,14 @@ module crt_short_glow #(parameter BEAM_SPOT=0, CRT_REV=0) (
         if (BEAM_SPOT) begin : spot_profile
             // Each phosphor contributes a colored shoulder one HDMI pixel
             // to either side. Bright primaries emit even on a dark background.
-            wire [7:0] source = c0[ch*8 +: 8];
+            // A preset of overlapping phosphor primaries, with neutral
+            // greys and the white point preserved exactly. Green receives
+            // 1/16 red, red and blue each receive 1/8 green.
+            wire [7:0] primary=c0[ch*8 +: 8];
+            wire [7:0] adjacent=ch==1 ? c0[23:16] : c0[15:8];
+            localparam SHIFT=ch==1 ? 4 : 3;
+            wire [7:0] emitted=primary-(primary>>SHIFT)+(adjacent>>SHIFT);
+            wire [7:0] source=CRT_REV>=5 && emission ? emitted : primary;
             wire [7:0] wing = (source >> 1) + (source[6] ? (source >> 3) : 8'd0);
             reg [7:0] w0,w1,w2,w3;
             reg [7:0] core1,core2,core3;
