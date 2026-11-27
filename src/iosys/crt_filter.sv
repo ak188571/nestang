@@ -94,17 +94,18 @@ module crt_filter #(parameter ROW_GAINS=0, REGISTER_CONTROLS=0) (
         end
     endfunction
     // Frame-applied core_config[21]: brightness-dependent scanline depth.
-    // Use the source pixel at the FIR center. Capture its brightness class
-    // alongside blurred_q (or palette_q when blur is disabled).
-    wire [23:0] beam_pixel = has_blur ?  center : rgb_in;
-    wire [3:0] luma = {2'b0, beam_pixel[23:22]} +
-                      {1'b0, beam_pixel[15:14], 1'b0} +
-                      {2'b0, beam_pixel[7:6]};
-    reg [1:0] beam_class = 0;
+    // Split the weighted sum across the existing scan-pixel boundary.
+    // floor((R + 2*G + B)/4) = floor((floor((R+B)/2) + G)/2),
+    // with R, G and B each taken from the two most significant bits.
+    wire [23:0] beam_pixel = has_blur ? center : rgb_in;
+    wire [2:0] red_blue = {1'b0, beam_pixel[23:22]} + {1'b0, beam_pixel[7:6]};
+    reg [1:0] half_red_blue_q = 0, green_q = 0;
     always @(posedge pclk) begin
-        if (!resetn) beam_class <= 0;
-        else beam_class <= luma[3:2];
+        half_red_blue_q <= resetn ? red_blue[2:1] : 2'd0;
+        green_q <= resetn ? beam_pixel[15:14] : 2'd0;
     end
+    wire [2:0] half_luma = {1'b0, half_red_blue_q} + {1'b0, green_q};
+    wire [1:0] beam_class = half_luma[2:1];
     // Middle band retains about 3/4 of the depth, highlights retain 1/2.
     wire [3:0] middle_depth = scan_depth - (({1'b0, scan_depth} + 5'd2) >> 2);
     wire [4:0] full_gain=5'd16-{1'b0,scan_depth};
