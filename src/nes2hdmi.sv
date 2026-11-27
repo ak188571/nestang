@@ -439,9 +439,9 @@ crt_phosphor_mask #(.CRT_REV(CRT_REV)) phosphors(
     .row_bank(cy[1]),.wide(crt_config_active[8]),.odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
     .game_rgb(game_rgb_display), .gamma_mode(crt_config_active[25:24]),
         .temperature(crt_config_active[27:26]), .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(phosphor_rgb));
-crt_screen_edges #(.CURVATURE(CURVATURE),.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
+crt_screen_edges #(.RF_NOISE(CRT_REV>=2),.CURVATURE(CURVATURE),.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(
     .pclk(clk_pixel), .resetn(resetn), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
-    .curve_rim(curve_enabled && curve_rim),.vignette(crt_config_active[28]), .rounded(crt_config_active[29]),
+    .rf(crt_config_active[7] && crt_config_active[12]),.curve_rim(curve_enabled && curve_rim),.vignette(crt_config_active[28]), .rounded(crt_config_active[29]),
     .overscan(crt_config_active[30]), .widths(overscan_active),
     .x(cx), .y(cy), .pixel(phosphor_rgb), .rgb_out(rgb));
 

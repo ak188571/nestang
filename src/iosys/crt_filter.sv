@@ -211,7 +211,7 @@ endmodule
 // Screen-space effects for the active game rectangle. The control registers
 // advance on the same edge as the converter's existing RGB compositor.
 module crt_screen_edges #(
-    parameter CURVATURE=0,
+    parameter CURVATURE=0, RF_NOISE=0,
     parameter integer LEFT = 160, RIGHT = 1120, HEIGHT = 720
 ) (
     input wire pclk, resetn, game_pixel, vignette, rounded, overscan,
@@ -220,7 +220,7 @@ module crt_screen_edges #(
     input wire [9:0] y,
     input wire [23:0] pixel,
     output wire [23:0] rgb_out,
-    input wire curve_rim
+    input wire curve_rim, rf
 );
     // A 32-pixel quarter-circle sampled at pixel centers. The table gives
     // the number of pixels to replace at either end of this scanline.
@@ -264,20 +264,31 @@ module crt_screen_edges #(
     wire [10:0] from_right = RIGHT - 1 - x;
     wire [10:0] dx = x < (LEFT+RIGHT)/2 ? from_left : from_right;
     wire [5:0] column_loss = dx < 128 ? 6'd32 - dx[6:2] : 0;
+    // Add receiver noise and a diagonal carrier beat to decoded NTSC.
+    // Reserve 1/16 of the output range for interference, including on black.
+    reg [15:0] grain=16'h1;
+    wire [3:0] beat=x[3:0]+y[3:0];
+    wire receiver=RF_NOISE && resetn && game_pixel && rf;
+    reg [3:0] noise_q=0;
+    always @(posedge pclk) begin
+        grain<=resetn ? {grain[14:0],grain[15]^grain[13]^grain[12]^grain[10]} : 16'h1;
+        noise_q<=receiver ? {beat[3],grain[2:0]} : 0;
+    end
+    wire [7:0] unity=receiver ? 8'd120 : 8'd128;
     reg [7:0] gain = 8'd128;
     wire cropped = y < widths[31:24] || from_bottom < widths[23:16] ||
                    from_left < widths[15:8] || from_right < widths[7:0];
     reg cut = 0;
     always @(posedge pclk) begin
         gain <= resetn && game_pixel && vignette ?
-                8'd128 - line_loss - column_loss : 8'd128;
+                unity - line_loss - column_loss : unity;
         cut <= resetn && game_pixel && ((CURVATURE && curve_rim) || (rounded && dx < inset) || (overscan && cropped));
     end
 
     // Unity gain retains every bit, including OSD and the existing phosphor mask.
     for (genvar c=0; c<3; c=c+1) begin : component
         wire [15:0] scaled = pixel[8*c +: 8] * gain;
-        assign rgb_out[8*c +: 8] = cut ? 8'h30 : scaled[14:7];
+        assign rgb_out[8*c +: 8] = cut ? 8'h30 : scaled[14:7]+noise_q;
     end
 endmodule
 
