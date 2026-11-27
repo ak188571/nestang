@@ -362,10 +362,11 @@ wire [23:0] decoded_rgb,ntsc_pixel,bloom_pixel;
     endgenerate
     wire [23:0] spatial_rgb, source_rgb, persistence_rgb;
     generate if(PERSISTENCE) begin : persistence_path
-        crt_persistence #(.HEIGHT(240),.DISPLAY_BITS(16),.BLOOM_DELAY(4)) decay(
+        crt_persistence #(.RGB_PROFILE(CRT_REV>=4),.HEIGHT(240),.DISPLAY_BITS(16),.BLOOM_DELAY(4)) decay(
             .clk(clk),.pclk(clk_pixel),.resetn(resetn),.requested(crt_config_applied[16] && crt_config_applied[10]),
             .upcoming_addr({scanline[7:0],cycle[7:0]}),.write_pixel(mem_portA_we),.native_rgb(NES_PALETTE[mem_portA_wdata]),
             .frame_start(cx==0 && cy==0),.read_addr(mem_portB_addr),.bloom(bloom_enabled),
+            .write_rgb_profile(crt_config_applied[4]),.read_rgb_profile(crt_config_active[4]),
             .base_rgb(spatial_rgb),.pixel(persistence_rgb));
         assign source_rgb=persistence_enabled ? persistence_rgb : spatial_rgb;
     end else begin
