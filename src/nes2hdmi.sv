@@ -3,7 +3,7 @@
 
 `timescale 1ns / 1ps
 
-module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0, NTSC_COMPOSITE=0, BLOOM=0, PERSISTENCE=0, BEAM_SPOT=0) (
+module nes2hdmi #(parameter OVERSCAN=0, GLOW=0, CURVATURE=0, CONVERGENCE=0, NTSC_COMPOSITE=0, BLOOM=0, PERSISTENCE=0, BEAM_SPOT=0, CRT_REV=0) (
 	input clk,      // nes clock
 	input resetn,
 
@@ -174,10 +174,12 @@ end
 // The carry condition xcnt+768 >= 960 reduces to xcnt >= 192.
 // Blank margins provide priming time at row boundaries before x=160.
 wire [7:0] xx_three=xx+(xcnt>=11'd192 ? 8'd1 : 8'd0);
-assign mem_portB_addr = curve_enabled ? {(8'd8+curve_y[7:0]),curve_x[7:0]} :
-                            blur_enabled ? yy * WIDTH + xx_three + 8*256 :
-                       scan_enabled ? yy_next * WIDTH + xx_next + 8*256 :
-                                      yy * WIDTH + xx + 8*256;
+// In the visible aperture a one-dot lookahead advances when phase >= 704.
+ // Both axes have settled during the 160-pixel left margin. Keep the raw
+ // fetch unchanged and avoid decoding HDMI x on the path to display RAM.
+wire [7:0] xx_one=xx+(xcnt>=11'd704 ? 8'd1 : 8'd0);
+assign mem_portB_addr = curve_enabled ? {8'(8+curve_y[7:0]),curve_x[7:0]} :
+                       {8'(8+yy),blur_enabled ? xx_three : scan_enabled ? xx_one : xx};
 // Integrate a one-output-pixel-wide dark band at each native source-row end.
 // ycnt advances by 224 modulo 720, so every reachable phase is a multiple of 16.
 // Band overlap with the output-row footprint is triangular, 0..224 (0..14 here).
@@ -432,9 +434,9 @@ always @(posedge clk_pixel) begin
 end
 
 wire [23:0] phosphor_rgb;
-crt_phosphor_mask phosphors(
+crt_phosphor_mask #(.CRT_REV(CRT_REV)) phosphors(
     .pclk(clk_pixel), .resetn(resetn), .before_first(cx==XSTART-1),
-    .odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
+    .row_bank(cy[1]),.wide(crt_config_active[8]),.odd_row(cy[0]), .game_pixel(crt_config_active[16] && active && cy<FRAMEHEIGHT && !osd_pixel),
     .game_rgb(game_rgb_display), .gamma_mode(crt_config_active[25:24]),
         .temperature(crt_config_active[27:26]), .mode(crt_config_active[23:22]), .composed_rgb(composed_rgb), .rgb_out(phosphor_rgb));
 crt_screen_edges #(.CURVATURE(CURVATURE),.LEFT(XSTART), .RIGHT(XSTOP), .HEIGHT(FRAMEHEIGHT)) edges(

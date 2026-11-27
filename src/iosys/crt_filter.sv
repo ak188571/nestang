@@ -137,9 +137,10 @@ endmodule
 
 // The RGB input is the converter's existing registered composite pixel.
 // Register its per-channel mask in parallel, so no pixel delay is added.
-module crt_phosphor_mask (
+module crt_phosphor_mask #(parameter CRT_REV=0) (
     input wire pclk, resetn,
-    input wire before_first, odd_row, game_pixel,
+    input wire before_first, odd_row, game_pixel, wide,
+    input wire row_bank,
     input wire [1:0] mode, gamma_mode, temperature,
     input wire [23:0] game_rgb,
     input wire [23:0] composed_rgb,
@@ -147,9 +148,14 @@ module crt_phosphor_mask (
 );
     // One-hot RGB order. Restart the pattern at the game's left edge on every row.
     reg [2:0] stripe = 3'b100;
+    reg repeat_dot=0, next_triad=0;
     always @(posedge pclk) begin
+        if (!resetn || before_first) next_triad<=0;
+        else if (stripe[0] && (!wide || repeat_dot)) next_triad<=!next_triad;
+        if (!resetn || before_first) repeat_dot<=0;
+        else repeat_dot<=!repeat_dot;
         if (!resetn || before_first) stripe <= 3'b100;
-        else stripe <= {stripe[0], stripe[2:1]};
+        else if (!CRT_REV || !wide || repeat_dot) stripe <= {stripe[0], stripe[2:1]};
     end
 
     reg [2:0] full_strength = 3'b111;
@@ -158,6 +164,10 @@ module crt_phosphor_mask (
         else case (mode)
             2'd1: full_strength <= stripe;
             2'd2: full_strength <= odd_row ? {stripe[0], stripe[2:1]} : stripe;
+            // Three luminous rows and one bridge per triad. Adjacent
+            // triads offset the bridge by two rows, like staggered slots.
+            2'd3: full_strength <= !CRT_REV ? 3'b111 :
+                    odd_row && (row_bank==next_triad) ? 3'b000 : stripe;
             default: full_strength <= 3'b111;
         endcase
     end

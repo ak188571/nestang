@@ -381,7 +381,7 @@ wire [7:0]  overlay_y;
 wire [14:0] overlay_color;      // BGR5
 
 // HDMI output
-nes2hdmi #(.BEAM_SPOT(1), .PERSISTENCE(1), .BLOOM(1), .NTSC_COMPOSITE(1), .CONVERGENCE(1), .CURVATURE(1), .GLOW(1), .OVERSCAN(1)) u_hdmi (     // purple: RGB=440064 (010001000_00000000_01100100), BGR5=01100_00000_01000
+nes2hdmi #(.CRT_REV(1), .BEAM_SPOT(1), .PERSISTENCE(1), .BLOOM(1), .NTSC_COMPOSITE(1), .CONVERGENCE(1), .CURVATURE(1), .GLOW(1), .OVERSCAN(1)) u_hdmi (     // purple: RGB=440064 (010001000_00000000_01100100), BGR5=01100_00000_01000
     .clk(clk), .resetn(sys_resetn),
     .core_config(core_config), .crt_config_applied(crt_config_applied),
     .overscan_widths(overscan_widths),
@@ -397,7 +397,7 @@ nes2hdmi #(.BEAM_SPOT(1), .PERSISTENCE(1), .BLOOM(1), .NTSC_COMPOSITE(1), .CONVE
 
 
 // Connect to BL616 companion MCU for sys module for menu, rom loading...
-iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1), .SUPPORT_SPOT(1), .SUPPORT_PERSISTENCE(1), .SUPPORT_BLOOM(1), .SUPPORT_NTSC(1), .SUPPORT_CONVERGENCE(1), .SUPPORT_CURVE(1), .SUPPORT_GLOW(1), .SUPPORT_RESTART(1) )     // purple nestang logo
+iosys_bl616 #(.COLOR_LOGO(15'b01100_00000_01000), .FREQ(21_492_000), .CORE_ID(1), .CRT_REV(1), .SUPPORT_SPOT(1), .SUPPORT_PERSISTENCE(1), .SUPPORT_BLOOM(1), .SUPPORT_NTSC(1), .SUPPORT_CONVERGENCE(1), .SUPPORT_CURVE(1), .SUPPORT_GLOW(1), .SUPPORT_RESTART(1) )     // purple nestang logo
     sys_inst (
     .clk(clk), .hclk(hclk), .resetn(sys_resetn),
 
